@@ -59,6 +59,13 @@
 #include <sys/zvol.h>
 #include <sys/zfs_ratelimit.h>
 
+#include <sys/sysctl.h>
+
+static int use_ces16 = 1;
+SYSCTL_DECL(_vfs_zfs);
+SYSCTL_INT(_vfs_zfs, OID_AUTO, use_ces16, CTLFLAG_RW, &use_ces16,
+    1, "Use the taskqueue in vdev_load");
+
 /* default target for number of metaslabs per top-level vdev */
 int zfs_vdev_default_ms_count = 200;
 
@@ -1631,6 +1638,14 @@ vdev_probe(vdev_t *vd, zio_t *zio)
 
 	zio_nowait(pio);
 	return (NULL);
+}
+
+static void
+vdev_load_child(void *arg)
+{
+	vdev_t *vd = arg;
+
+	vd->vdev_load_error = vdev_load(vd);
 }
 
 static void
@@ -3259,16 +3274,46 @@ vdev_checkpoint_sm_object(vdev_t *vd, uint64_t *sm_obj)
 int
 vdev_load(vdev_t *vd)
 {
+	int children = vd->vdev_children;
 	int error = 0;
+	taskq_t *tq = NULL;
+
+	ASSERT(spa_config_held(spa, SCL_STATE_ALL, RW_WRITER) == SCL_STATE_ALL);
+
+	/*
+	 * It's only worthwhile to use the taskq for the root vdev, because the
+	 * slow part is metaslab_init, and that only happens for top-level
+	 * vdevs.
+	 */
+	if (use_ces16 && vd->vdev_ops == &vdev_root_ops && vd->vdev_children > 0) {
+		tq = taskq_create("vdev_load", children, minclsyspri,
+		    children, children, TASKQ_PREPOPULATE);
+	}
 
 	/*
 	 * Recursively load all children.
 	 */
 	for (int c = 0; c < vd->vdev_children; c++) {
-		error = vdev_load(vd->vdev_child[c]);
-		if (error != 0) {
-			return (error);
+		vdev_t *cvd = vd->vdev_child[c];
+
+		if (tq == NULL || vdev_uses_zvols(cvd)) {
+			cvd->vdev_load_error = vdev_load(cvd);
+		} else {
+			VERIFY(taskq_dispatch(tq, vdev_load_child,
+			    cvd, TQ_SLEEP) != TASKQID_INVALID);
 		}
+	}
+
+	if (tq != NULL) {
+		taskq_wait(tq);
+		taskq_destroy(tq);
+	}
+
+	for (int c = 0; c < vd->vdev_children; c++) {
+		int error = vd->vdev_child[c]->vdev_load_error;
+
+		if (error != 0)
+			return (error);
 	}
 
 	vdev_set_deflate_ratio(vd);
