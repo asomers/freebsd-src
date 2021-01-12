@@ -59,7 +59,10 @@
 #include <sys/zvol.h>
 #include <sys/zfs_ratelimit.h>
 
+#include <sys/sdt.h>
 #include <sys/sysctl.h>
+
+SDT_PROVIDER_DEFINE(zfs);
 
 static int use_ces16 = 1;
 SYSCTL_DECL(_vfs_zfs);
@@ -3271,6 +3274,7 @@ vdev_checkpoint_sm_object(vdev_t *vd, uint64_t *sm_obj)
 	return (error);
 }
 
+SDT_PROBE_DEFINE2(zfs, , vdev, vdev_load, "struct vdev*", "int");
 int
 vdev_load(vdev_t *vd)
 {
@@ -3280,6 +3284,7 @@ vdev_load(vdev_t *vd)
 
 	ASSERT(spa_config_held(spa, SCL_STATE_ALL, RW_WRITER) == SCL_STATE_ALL);
 
+	SDT_PROBE2(zfs, , vdev, vdev_load, vd, 0);
 	/*
 	 * It's only worthwhile to use the taskq for the root vdev, because the
 	 * slow part is metaslab_init, and that only happens for top-level
@@ -3308,6 +3313,7 @@ vdev_load(vdev_t *vd)
 		taskq_wait(tq);
 		taskq_destroy(tq);
 	}
+	SDT_PROBE2(zfs, , vdev, vdev_load, vd, 1);
 
 	for (int c = 0; c < vd->vdev_children; c++) {
 		int error = vd->vdev_child[c]->vdev_load_error;
@@ -3339,6 +3345,7 @@ vdev_load(vdev_t *vd)
 			return (error);
 		}
 	}
+	SDT_PROBE2(zfs, , vdev, vdev_load, vd, 2);
 
 	/*
 	 * Load any rebuild state from the top-level vdev zap.
@@ -3353,6 +3360,7 @@ vdev_load(vdev_t *vd)
 			return (error);
 		}
 	}
+	SDT_PROBE2(zfs, , vdev, vdev_load, vd, 3);
 
 	/*
 	 * If this is a top-level vdev, initialize its metaslabs.
@@ -3414,6 +3422,7 @@ vdev_load(vdev_t *vd)
 			return (error);
 		}
 	}
+	SDT_PROBE2(zfs, , vdev, vdev_load, vd, 4);
 
 	/*
 	 * If this is a leaf vdev, load its DTL.
@@ -3447,6 +3456,7 @@ vdev_load(vdev_t *vd)
 		    "space map object from vdev ZAP [error=%d]", error);
 		return (error);
 	}
+	SDT_PROBE2(zfs, , vdev, vdev_load, vd, 5);
 
 	return (0);
 }
