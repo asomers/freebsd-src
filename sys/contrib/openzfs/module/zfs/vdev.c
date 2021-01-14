@@ -59,15 +59,18 @@
 #include <sys/zvol.h>
 #include <sys/zfs_ratelimit.h>
 
+#ifdef _KERNEL
 #include <sys/sdt.h>
 #include <sys/sysctl.h>
-
 SDT_PROVIDER_DEFINE(zfs);
+#endif
 
 static int use_ces16 = 1;
+#ifdef _KERNEL
 SYSCTL_DECL(_vfs_zfs);
 SYSCTL_INT(_vfs_zfs, OID_AUTO, use_ces16, CTLFLAG_RW, &use_ces16,
     1, "Use the taskqueue in vdev_load");
+#endif
 
 /* default target for number of metaslabs per top-level vdev */
 int zfs_vdev_default_ms_count = 200;
@@ -3307,7 +3310,10 @@ vdev_checkpoint_sm_object(vdev_t *vd, uint64_t *sm_obj)
 	return (error);
 }
 
+#ifdef _KERNEL
 SDT_PROBE_DEFINE2(zfs, , vdev, vdev_load, "struct vdev*", "int");
+#endif
+
 int
 vdev_load(vdev_t *vd)
 {
@@ -3315,9 +3321,9 @@ vdev_load(vdev_t *vd)
 	int error = 0;
 	taskq_t *tq = NULL;
 
-	ASSERT(spa_config_held(spa, SCL_STATE_ALL, RW_WRITER) == SCL_STATE_ALL);
-
+#ifdef _KERNEL
 	SDT_PROBE2(zfs, , vdev, vdev_load, vd, 0);
+#endif
 	/*
 	 * It's only worthwhile to use the taskq for the root vdev, because the
 	 * slow part is metaslab_init, and that only happens for top-level
@@ -3346,7 +3352,9 @@ vdev_load(vdev_t *vd)
 		taskq_wait(tq);
 		taskq_destroy(tq);
 	}
+#ifdef _KERNEL
 	SDT_PROBE2(zfs, , vdev, vdev_load, vd, 1);
+#endif
 
 	for (int c = 0; c < vd->vdev_children; c++) {
 		int error = vd->vdev_child[c]->vdev_load_error;
@@ -3378,7 +3386,9 @@ vdev_load(vdev_t *vd)
 			return (error);
 		}
 	}
+#ifdef _KERNEL
 	SDT_PROBE2(zfs, , vdev, vdev_load, vd, 2);
+#endif
 
 	/*
 	 * Load any rebuild state from the top-level vdev zap.
@@ -3393,7 +3403,9 @@ vdev_load(vdev_t *vd)
 			return (error);
 		}
 	}
+#ifdef _KERNEL
 	SDT_PROBE2(zfs, , vdev, vdev_load, vd, 3);
+#endif
 
 	/*
 	 * If this is a top-level vdev, initialize its metaslabs.
@@ -3455,7 +3467,9 @@ vdev_load(vdev_t *vd)
 			return (error);
 		}
 	}
+#ifdef _KERNEL
 	SDT_PROBE2(zfs, , vdev, vdev_load, vd, 4);
+#endif
 
 	/*
 	 * If this is a leaf vdev, load its DTL.
@@ -3489,7 +3503,9 @@ vdev_load(vdev_t *vd)
 		    "space map object from vdev ZAP [error=%d]", error);
 		return (error);
 	}
+#ifdef _KERNEL
 	SDT_PROBE2(zfs, , vdev, vdev_load, vd, 5);
+#endif
 
 	return (0);
 }
