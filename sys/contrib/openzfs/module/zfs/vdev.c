@@ -65,7 +65,7 @@
 SDT_PROVIDER_DEFINE(zfs);
 #endif
 
-static int use_ces16 = 1;
+int use_ces16 = 1;
 #ifdef _KERNEL
 SYSCTL_DECL(_vfs_zfs);
 SYSCTL_INT(_vfs_zfs, OID_AUTO, use_ces16, CTLFLAG_RW, &use_ces16,
