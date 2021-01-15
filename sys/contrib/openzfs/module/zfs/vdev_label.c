@@ -815,7 +815,7 @@ retry:
 			if ((error || label_txg == 0) && !config) {
 				config = label;
 				if (use_ces16) {
-					for (; l < VDEV_LABELS; l++)
+					for (l++; l < VDEV_LABELS; l++)
 						zio_wait(zio[l]);
 				}
 				break;
