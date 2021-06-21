@@ -77,4 +77,4 @@
 /usr.sbin/bhyvectl	@bsdjhb @grehan-freebsd
 /usr.sbin/bhyveload	@bsdjhb @grehan-freebsd
 /usr.sbin/lpr	@gbergling
-/usr.bin/fetch	@dag-erling
+/usr/bin/fetch	@dag-erling
