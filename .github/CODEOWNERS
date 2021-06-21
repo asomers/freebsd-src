@@ -31,7 +31,8 @@
 # revision or makes a commit to the specified subtree.
 # ***
 
-autofs/        @trasz
+autofs/		@trasz
+iscsi/		@trasz
 /bin/sh		@jillest
 /contrib/atf		@ngie-eign
 /contrib/capsicum-test	@ngie-eign
