@@ -31,6 +31,7 @@
 # revision or makes a commit to the specified subtree.
 # ***
 
+fusefs/		@asomers
 /bin/sh		@jillest
 /contrib/atf		@ngie-eign
 /contrib/capsicum-test	@ngie-eign
@@ -69,7 +70,6 @@
 /sys/x86/pci	@bsdimp @bsdjhb
 /tests	@ngie-eign
 /tests/sys/aio/	@asomers
-/tests/sys/fs/fusefs/ @asomers
 /tools/build	@bsdimp
 /tools/tools/nanobsd	@bsdimp
 /usr.bin/top	@grimreaper
