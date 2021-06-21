@@ -31,17 +31,6 @@
 # revision or makes a commit to the specified subtree.
 # ***
 
-autofs/	@trasz
-iscsi/	@trasz
-kqueue/	@jmgurney
-libpam/		@dag-erling
-linprocfs/	@dag-erling
-opencrypto/	@jmgurney
-openssl/	@juikim
-procfs/		@dag-erling
-pseudofs/	@dag-erling
-rctl/	@trasz
-vmm/	@bsdjhb @grehan-freebsd
 /bin/sh		@jillest
 /contrib/atf		@ngie-eign
 /contrib/capsicum-test	@ngie-eign
@@ -88,4 +77,4 @@ vmm/	@bsdjhb @grehan-freebsd
 /usr.sbin/bhyvectl	@bsdjhb @grehan-freebsd
 /usr.sbin/bhyveload	@bsdjhb @grehan-freebsd
 /usr.sbin/lpr	@gbergling
-/usr/bin/fetch	@dag-erling
+/usr.bin/fetch	@dag-erling
