@@ -43,61 +43,49 @@ pseudofs/	@dag-erling
 rctl/	@trasz
 vmm/	@bsdjhb @grehan-freebsd
 /bin/sh		@jillest
-/contrib/atf		@ngie
-/contrib/capsicum-test	@ngie
-/contrib/googletest	@ngie
+/contrib/atf		@ngie-eign
+/contrib/capsicum-test	@ngie-eign
+/contrib/googletest	@ngie-eign
 /contrib/ipfilter	@cschuber
 /contrib/libcxxrt	@DimitryAndric @emaste
 /contrib/llvm-project	@DimitryAndric
 /contrib/llvm-project/libunwind @DimitryAndric @emaste @bsdjhb
 /contrib/llvm-project/lldb @DimitryAndric @emaste
 /contrib/llvm-project/openmp @DimitryAndric @emaste
-/contrib/netbsd-tests	@ngie
-/contrib/pjdfstest	@ngie @asomers
+/contrib/netbsd-tests	@ngie-eign
+/contrib/pjdfstest	@ngie-eign @asomers
 /crypto/openssh	@dag-erling
 /etc/mail	@gshapiro
 /etc/sendmail	@gshapiro
 /lib/libc/sys/kevent.c	@jmgurney
-/lib/libdpv	@devinteske
 /lib/libfetch	@dag-erling
 /lib/libfigpar	@dag-erling
 /lib/libvmmapi	@bsdjhb @grehan-freebsd
 /sbin/mount_fusefs @asomers
-/share/mk	@bsdimp @bapt @bdrewery @emaste @sgerraty
-/stand/forth	@devinteske
+/share/mk	@bsdimp @bapt @bdrewery @emaste
 /stand/lua	@kevans91
 /sys/amd64/pci	@bsdimp @bsdjhb
 /sys/arm/allwinner	@evadot
 /sys/arm64/rockchip	@evadot
 /sys/compat/linuxkpi	@hselasky
-/sys/contrib/dev/ice	@ricera
 /sys/contrib/ipfilter	@cschuber
 /sys/dev/drm2	@bsdimp
-/sys/dev/e1000	@ricera
-/sys/dev/ice	@ricera
-/sys/dev/ixgbe	@ricera
-/sys/dev/ixl	@ricera
-/sys/dev/ofw	@nwhitehorn
 /sys/dev/pci	@bsdimp @bsdjhb
 /sys/dev/sound/usb	@hselasky
 /sys/dev/usb	@hselasky
 /sys/fs/fuse/	@asomers
 /sys/kern/vfs_aio.c	@asomers
 /sys/netinet/ip_carp.c	@glebius
-/sys/netinet/sctp_*	@tuexen
-/sys/netpfil/pf	@kprovost @glebius
+/sys/netpfil/pf	@glebius
 /sys/x86/pci	@bsdimp @bsdjhb
-/tests	@ngie
+/tests	@ngie-eign
 /tests/sys/aio/	@asomers
 /tests/sys/fs/fusefs/ @asomers
 /tools/build	@bsdimp
 /tools/tools/nanobsd	@bsdimp
-/usr.bin/dpv	@devinteske
 /usr.bin/top	@grimreaper
 /usr.sbin/bhyve	@bsdjhb @grehan-freebsd
 /usr.sbin/bhyvectl	@bsdjhb @grehan-freebsd
 /usr.sbin/bhyveload	@bsdjhb @grehan-freebsd
-/usr.sbin/bsdconfig	@devinteske
 /usr.sbin/lpr	@gbergling
-/usr.sbin/sysrc	@devinteske
 /usr/bin/fetch	@dag-erling
