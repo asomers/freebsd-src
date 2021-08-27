@@ -5,7 +5,10 @@ BINDIR=         ${TESTSDIR}
 
 MAN=
 PROGS+=		helper
-#ATF_TESTS_SH+=	smoke
+ATF_TESTS_C+=	destructive
 ATF_TESTS_C+=	smoke
+
+# Some tests cases alter enclosure state, so they can't run concurrently.
+TEST_METADATA.destructive+= is_exclusive=true
 
 .include <bsd.test.mk>

@@ -139,34 +139,177 @@ ATF_TC_HEAD(getelmdesc, tc)
 }
 ATF_TC_BODY(getelmdesc, tc)
 {
-
 	for_each_ses_dev(do_getelmdesc, O_RDONLY);
 }
 
-static void do_getencname(const char *devname __unused, int fd) {
+static void do_getencid(const char *devname, int fd) {
 	encioc_string_t stri;
+	FILE *pipe;
+	char cmd[256];
+	char encid[32];
+	char line[256];
 	int r;
-	char str[32];
 
-	stri.bufsiz = sizeof(str);
-	stri.buf = &str[0];
-	r = ioctl(fd, ENCIOC_GETENCNAME, (caddr_t) &stri);
+	snprintf(cmd, sizeof(cmd), "sg_ses -p1 %s "
+		"| awk '/enclosure logical identifier/ {printf $NF}'",
+		devname);
+	pipe = popen(cmd, "r");
+	ATF_REQUIRE(pipe != NULL);
+	ATF_REQUIRE(NULL != fgets(line, sizeof(line), pipe));
+
+	stri.bufsiz = sizeof(encid);
+	stri.buf = &encid[0];
+	r = ioctl(fd, ENCIOC_GETENCID, (caddr_t) &stri);
 	ATF_REQUIRE_EQ(r, 0);
-	printf("Enclosure Name: %s\n", stri.buf);
+	ATF_CHECK_STREQ(line, (char*)stri.buf);
+
+	pclose(pipe);
 }
 
-ATF_TC_WITHOUT_HEAD(getencname);
+ATF_TC(getencid);
+ATF_TC_HEAD(getencid, tc)
+{
+	atf_tc_set_md_var(tc, "descr",
+	    "Compare ENCIOC_GETENCID's output to sg3_utils'");
+	atf_tc_set_md_var(tc, "require.user", "root");
+	atf_tc_set_md_var(tc, "require.progs", "sg_ses");
+}
+ATF_TC_BODY(getencid, tc)
+{
+	for_each_ses_dev(do_getencid, O_RDONLY);
+}
+
+static void do_getencname(const char *devname, int fd) {
+	encioc_string_t stri;
+	FILE *pipe;
+	char cmd[256];
+	char encname[32];
+	char line[256];
+	int r;
+
+	snprintf(cmd, sizeof(cmd), "sg_inq -o %s | awk '"
+		"/Vendor identification/ {vi=$NF} "
+		"/Product identification/ {pi=$NF} "
+		"/Product revision level/ {prl=$NF} "
+		"END {printf(vi \" \" pi \" \" prl)}'", devname);
+	pipe = popen(cmd, "r");
+	ATF_REQUIRE(pipe != NULL);
+	ATF_REQUIRE(NULL != fgets(line, sizeof(line), pipe));
+
+	stri.bufsiz = sizeof(encname);
+	stri.buf = &encname[0];
+	r = ioctl(fd, ENCIOC_GETENCNAME, (caddr_t) &stri);
+	ATF_REQUIRE_EQ(r, 0);
+	ATF_CHECK_STREQ(line, (char*)stri.buf);
+
+	pclose(pipe);
+}
+
+ATF_TC(getencname);
+ATF_TC_HEAD(getencname, tc)
+{
+	atf_tc_set_md_var(tc, "descr",
+	    "Compare ENCIOC_GETENCNAME's output to sg3_utils'");
+	atf_tc_set_md_var(tc, "require.user", "root");
+	atf_tc_set_md_var(tc, "require.progs", "sg_inq");
+}
 ATF_TC_BODY(getencname, tc)
 {
-
 	for_each_ses_dev(do_getencname, O_RDONLY);
+}
+
+static void do_getencstat(const char *devname, int fd) {
+	FILE *pipe;
+	char cmd[256];
+	unsigned char e, estat, invop, info, noncrit, crit, unrecov;
+	int r;
+
+	snprintf(cmd, sizeof(cmd), "sg_ses -p2 %s "
+		"| grep 'INVOP='",
+		devname);
+	pipe = popen(cmd, "r");
+	ATF_REQUIRE(pipe != NULL);
+	r = fscanf(pipe,
+	    "  INVOP=%hhu, INFO=%hhu, NON-CRIT=%hhu, CRIT=%hhu, UNRECOV=%hhu",
+	    &invop, &info, &noncrit, &crit, &unrecov);
+	ATF_REQUIRE_EQ(r, 5);
+
+	r = ioctl(fd, ENCIOC_GETENCSTAT, (caddr_t) &estat);
+	ATF_REQUIRE_EQ(r, 0);
+	e = (invop << 4) | (info << 3) | (noncrit << 2) | (crit << 1) | unrecov;
+	ATF_CHECK_EQ(estat, e);
+
+	pclose(pipe);
+}
+
+ATF_TC(getencstat);
+ATF_TC_HEAD(getencstat, tc)
+{
+	atf_tc_set_md_var(tc, "descr",
+	    "Compare ENCIOC_GETENCSTAT's output to sg3_utils'");
+	atf_tc_set_md_var(tc, "require.user", "root");
+	atf_tc_set_md_var(tc, "require.progs", "sg_ses");
+}
+ATF_TC_BODY(getencstat, tc)
+{
+	for_each_ses_dev(do_getencstat, O_RDONLY);
+}
+
+static void do_getnelm(const char *devname, int fd) {
+	FILE *pipe;
+	char cmd[256];
+	char line[256];
+	unsigned nobj, expected;
+	int r;
+
+	snprintf(cmd, sizeof(cmd), "sg_ses -p1 %s | awk '"
+		"/number of possible elements:/ {nelm = nelm + 1 + $NF} "
+		"END {print(nelm)}'"
+		, devname);
+	pipe = popen(cmd, "r");
+	ATF_REQUIRE(pipe != NULL);
+	ATF_REQUIRE(NULL != fgets(line, sizeof(line), pipe));
+	expected = atoi(line);
+
+	r = ioctl(fd, ENCIOC_GETNELM, (caddr_t) &nobj);
+	ATF_REQUIRE_EQ(r, 0);
+	ATF_CHECK_EQ(expected, nobj);
+
+	pclose(pipe);
+}
+
+ATF_TC(getnelm);
+ATF_TC_HEAD(getnelm, tc)
+{
+	atf_tc_set_md_var(tc, "descr",
+	    "Compare ENCIOC_GETNELM's output to sg3_utils'");
+	atf_tc_set_md_var(tc, "require.user", "root");
+	atf_tc_set_md_var(tc, "require.progs", "sg_ses");
+}
+ATF_TC_BODY(getnelm, tc)
+{
+	for_each_ses_dev(do_getnelm, O_RDONLY);
 }
 
 ATF_TP_ADD_TCS(tp)
 {
 
+	/*
+	 * Untested ioctls:
+	 *
+	 * * ENCIOC_GETTEXT because it was never implemented
+	 *
+	 */
 	ATF_TP_ADD_TC(tp, getelmdesc);
+	ATF_TP_ADD_TC(tp, getencid);
 	ATF_TP_ADD_TC(tp, getencname);
+	ATF_TP_ADD_TC(tp, getencstat);
+	ATF_TP_ADD_TC(tp, getnelm);
+	// TODO ENCIOC_GETELMMAP
+	// TODO ENCIOC_GETELMSTAT
+	// TODO ENCIOC_GETELMDEVNAMES
+	// TODO ENCIOC_GETSTRING
+
 
 	return (atf_no_error());
 }
