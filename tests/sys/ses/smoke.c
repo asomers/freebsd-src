@@ -218,6 +218,66 @@ ATF_TC_BODY(getelmmap, tc)
 	for_each_ses_dev(do_getelmmap, O_RDONLY);
 }
 
+static void do_getelmstat(const char *devname, int fd) {
+	encioc_element_t *map;
+	unsigned elm_idx;
+	unsigned nobj;
+	int r, elm_subidx;
+	elm_type_t last_elm_type = -1;
+
+	r = ioctl(fd, ENCIOC_GETNELM, (caddr_t) &nobj);
+	ATF_REQUIRE_EQ(r, 0);
+
+	map = calloc(nobj, sizeof(encioc_element_t));
+	ATF_REQUIRE(map != NULL);
+	r = ioctl(fd, ENCIOC_GETELMMAP, (caddr_t) map);
+
+	for (elm_idx = 0; elm_idx < nobj; elm_subidx++, elm_idx++) {
+		encioc_elm_status_t e_status;
+		FILE *pipe;
+		char cmd[256];
+		uint32_t status;
+
+		if (last_elm_type != map[elm_idx].elm_type)
+			elm_subidx = -1;
+		last_elm_type = map[elm_idx].elm_type;
+
+		snprintf(cmd, sizeof(cmd),
+		    "sg_ses -Hp2 --index=_%d,%d --get=0:7:32 %s",
+		    map[elm_idx].elm_type, elm_subidx, devname);
+		pipe = popen(cmd, "r");
+		ATF_REQUIRE(pipe != NULL);
+		r = fscanf(pipe, "0x%x", &status);
+		ATF_REQUIRE_EQ(r, 1);
+
+		memset(&e_status, 0, sizeof(e_status));
+		e_status.elm_idx = map[elm_idx].elm_idx;
+		r = ioctl(fd, ENCIOC_GETELMSTAT, (caddr_t)&e_status);
+		ATF_REQUIRE_EQ(r, 0);
+
+		ATF_CHECK_EQ(e_status.cstat[0], status >> 24);
+		ATF_CHECK_EQ(e_status.cstat[1], (status >> 16) & 0xFF);
+		ATF_CHECK_EQ(e_status.cstat[2], (status >> 8) & 0xFF);
+		ATF_CHECK_EQ(e_status.cstat[3], status & 0xFF);
+
+		pclose(pipe);
+	}
+	free(map);
+}
+
+ATF_TC(getelmstat);
+ATF_TC_HEAD(getelmstat, tc)
+{
+	atf_tc_set_md_var(tc, "descr",
+	    "Compare ENCIOC_GETELMSTAT's output to sg3_utils'");
+	atf_tc_set_md_var(tc, "require.user", "root");
+	atf_tc_set_md_var(tc, "require.progs", "sg_ses");
+}
+ATF_TC_BODY(getelmstat, tc)
+{
+	for_each_ses_dev(do_getelmstat, O_RDONLY);
+}
+
 static void do_getencid(const char *devname, int fd) {
 	encioc_string_t stri;
 	FILE *pipe;
@@ -378,11 +438,11 @@ ATF_TP_ADD_TCS(tp)
 	 */
 	ATF_TP_ADD_TC(tp, getelmdesc);
 	ATF_TP_ADD_TC(tp, getelmmap);
+	ATF_TP_ADD_TC(tp, getelmstat);
 	ATF_TP_ADD_TC(tp, getencid);
 	ATF_TP_ADD_TC(tp, getencname);
 	ATF_TP_ADD_TC(tp, getencstat);
 	ATF_TP_ADD_TC(tp, getnelm);
-	// TODO ENCIOC_GETELMSTAT
 	// TODO ENCIOC_GETELMDEVNAMES
 	// TODO ENCIOC_GETSTRING
 
