@@ -99,7 +99,6 @@ static void do_getelmdesc(const char *devname, int fd) {
 		size_t elen;
 
 		if (regexec(&re, line, 1, matches, 0) == REG_NOMATCH) {
-			/*printf("no match: %s\n", line);*/
 			continue;
 		}
 
@@ -140,6 +139,83 @@ ATF_TC_HEAD(getelmdesc, tc)
 ATF_TC_BODY(getelmdesc, tc)
 {
 	for_each_ses_dev(do_getelmdesc, O_RDONLY);
+}
+
+static int
+elm_type_name2int(const char *name) {
+	const char *elm_type_names[] = ELM_TYPE_NAMES;
+	int i;
+
+	for (i = 0; i <= ELMTYP_LAST; i++) {
+		/* sg_ses uses different case than ses(4) */
+		if (0 == strcasecmp(name, elm_type_names[i]))
+			return i;
+	}
+	return (-1);
+}
+
+static void do_getelmmap(const char *devname, int fd) {
+	encioc_element_t *map;
+	FILE *pipe;
+	char cmd[256];
+	char line[256];
+	unsigned elm_idx = 0;
+	unsigned nobj, subenc_id;
+	int r, elm_type;
+
+	r = ioctl(fd, ENCIOC_GETNELM, (caddr_t) &nobj);
+	ATF_REQUIRE_EQ(r, 0);
+
+	map = calloc(nobj, sizeof(encioc_element_t));
+	ATF_REQUIRE(map != NULL);
+	r = ioctl(fd, ENCIOC_GETELMMAP, (caddr_t) map);
+
+	snprintf(cmd, sizeof(cmd), "sg_ses -p1 %s", devname);
+	pipe = popen(cmd, "r");
+	ATF_REQUIRE(pipe != NULL);
+	while(NULL != fgets(line, sizeof(line), pipe)) {
+		char elm_type_name[80];
+		int i, num_elm;
+
+		r = sscanf(line,
+		    "    Element type: %[a-zA-Z0-9_ /], subenclosure id: %d",
+		    elm_type_name, &subenc_id);
+		if (r == 2) {
+			elm_type = elm_type_name2int(elm_type_name);
+			continue;
+		}
+		r = sscanf(line, "      number of possible elements: %d",
+		    &num_elm);
+		if (r != 1)
+			continue;
+
+		/* Skip the Overall elements */
+		elm_idx++;
+		for (i = 0; i < num_elm; i++, elm_idx++) {
+			ATF_CHECK_EQ(map[elm_idx].elm_idx, elm_idx);
+			ATF_CHECK_EQ(map[elm_idx].elm_subenc_id, subenc_id);
+			ATF_CHECK_EQ((int)map[elm_idx].elm_type, elm_type);
+		}
+	}
+
+	ATF_CHECK_EQ_MSG(nobj, elm_idx,
+			"Did not find the expected number of element "
+			"descriptors in sg_ses's output");
+	pclose(pipe);
+	free(map);
+}
+
+ATF_TC(getelmmap);
+ATF_TC_HEAD(getelmmap, tc)
+{
+	atf_tc_set_md_var(tc, "descr",
+	    "Compare ENCIOC_GETELMMAP's output to sg3_utils'");
+	atf_tc_set_md_var(tc, "require.user", "root");
+	atf_tc_set_md_var(tc, "require.progs", "sg_ses");
+}
+ATF_TC_BODY(getelmmap, tc)
+{
+	for_each_ses_dev(do_getelmmap, O_RDONLY);
 }
 
 static void do_getencid(const char *devname, int fd) {
@@ -301,11 +377,11 @@ ATF_TP_ADD_TCS(tp)
 	 *
 	 */
 	ATF_TP_ADD_TC(tp, getelmdesc);
+	ATF_TP_ADD_TC(tp, getelmmap);
 	ATF_TP_ADD_TC(tp, getencid);
 	ATF_TP_ADD_TC(tp, getencname);
 	ATF_TP_ADD_TC(tp, getencstat);
 	ATF_TP_ADD_TC(tp, getnelm);
-	// TODO ENCIOC_GETELMMAP
 	// TODO ENCIOC_GETELMSTAT
 	// TODO ENCIOC_GETELMDEVNAMES
 	// TODO ENCIOC_GETSTRING

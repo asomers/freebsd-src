@@ -114,6 +114,7 @@ static void do_setencstat(const char *devname __unused, int fd) {
 	r = ioctl(fd, ENCIOC_SETENCSTAT, (caddr_t) &commanded);
 	ATF_REQUIRE_EQ(r, 0);
 
+	/* Check that the status has changed */
 	r = ioctl(fd, ENCIOC_GETENCSTAT, (caddr_t) &altered);
 	ATF_REQUIRE_EQ(r, 0);
 	ATF_CHECK_EQ(commanded, altered);
@@ -160,7 +161,6 @@ ATF_TP_ADD_TCS(tp)
 	 *   used for stuff like firmware updates
 	 */
 	ATF_TP_ADD_TC(tp, setencstat);
-	// TODO ENCIOC_SETENCSTAT
 	// TODO ENCIOC_SETELMSTAT
 
 	return (atf_no_error());
