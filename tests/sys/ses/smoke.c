@@ -141,6 +141,105 @@ ATF_TC_BODY(getelmdesc, tc)
 	for_each_ses_dev(do_getelmdesc, O_RDONLY);
 }
 
+static void do_getelmdevnames(const char *devname __unused, int fd) {
+	encioc_element_t *map;
+	unsigned nobj;
+	const size_t namesize = 128;
+	int r;
+	char *namebuf;
+	unsigned elm_idx;
+
+	r = ioctl(fd, ENCIOC_GETNELM, (caddr_t) &nobj);
+	ATF_REQUIRE_EQ(r, 0);
+
+	namebuf = calloc(namesize, sizeof(char));
+	ATF_REQUIRE(namebuf != NULL);
+	map = calloc(nobj, sizeof(encioc_element_t));
+	ATF_REQUIRE(map != NULL);
+	r = ioctl(fd, ENCIOC_GETELMMAP, (caddr_t) map);
+	ATF_REQUIRE_EQ(r, 0);
+
+	for (elm_idx = 0; elm_idx < nobj; elm_idx++) {
+		/*
+		 * devnames should be present if:
+		 * * The element is of type Device Slot or Array Device Slot
+		 * * It isn't an Overall Element
+		 * * The element's status is not "Not Installed"
+		 */
+		encioc_elm_status_t e_status;
+		encioc_elm_devnames_t elmdn;
+
+		memset(&e_status, 0, sizeof(e_status));
+		e_status.elm_idx = elm_idx;
+		r = ioctl(fd, ENCIOC_GETELMSTAT, (caddr_t)&e_status);
+		ATF_REQUIRE_EQ(r, 0);
+
+		memset(&elmdn, 0, sizeof(elmdn));
+		elmdn.elm_idx = elm_idx;
+		elmdn.elm_names_size = namesize;
+		elmdn.elm_devnames = namebuf;
+		namebuf[0] = '\0';
+		r = ioctl(fd, ENCIOC_GETELMDEVNAMES, (caddr_t) &elmdn);
+		if (e_status.cstat[0] != SES_OBJSTAT_UNSUPPORTED &&
+		    e_status.cstat[0] != SES_OBJSTAT_NOTINSTALLED &&
+		    (map[elm_idx].elm_type == ELMTYP_DEVICE ||
+		     map[elm_idx].elm_type == ELMTYP_ARRAY_DEV))
+		{
+			ATF_CHECK_EQ(r, 0);
+		} else {
+			ATF_CHECK(r != 0);
+		}
+
+		if (r == 0) {
+			size_t z = 0;
+			int da = 0, ada = 0, pass = 0, nvd = 0;
+			int nvme = 0, unknown = 0;
+
+			while(elmdn.elm_devnames[z] != '\0') {
+				size_t e;
+				char *s;
+
+				if (elmdn.elm_devnames[z] == ',')
+					z++;	/* Skip the comma */
+				s = elmdn.elm_devnames + z;
+				e = strcspn(s, "0123456789");
+				if (0 == strncmp("da", s, e))
+					da++;
+				else if (0 == strncmp("ada", s, e))
+					ada++;
+				else if (0 == strncmp("pass", s, e))
+					pass++;
+				else if (0 == strncmp("nvd", s, e))
+					nvd++;
+				else if (0 == strncmp("nvme", s, e))
+					nvme++;
+				else
+					unknown++;
+				z += strcspn(elmdn.elm_devnames + z, ",");
+			}
+			/* There should be one pass dev for each non-pass dev */
+			ATF_CHECK_EQ(pass, da + ada + nvd + nvme);
+			ATF_CHECK_EQ_MSG(0, unknown,
+			    "Unknown device names %s", elmdn.elm_devnames);
+		}
+	}
+	free(map);
+	free(namebuf);
+}
+
+ATF_TC(getelmdevnames);
+ATF_TC_HEAD(getelmdevnames, tc)
+{
+	atf_tc_set_md_var(tc, "descr",
+	    "Compare ENCIOC_GETELMDEVNAMES's output to sg3_utils'");
+	atf_tc_set_md_var(tc, "require.user", "root");
+	atf_tc_set_md_var(tc, "require.progs", "sg_ses");
+}
+ATF_TC_BODY(getelmdevnames, tc)
+{
+	for_each_ses_dev(do_getelmdevnames, O_RDONLY);
+}
+
 static int
 elm_type_name2int(const char *name) {
 	const char *elm_type_names[] = ELM_TYPE_NAMES;
@@ -169,6 +268,7 @@ static void do_getelmmap(const char *devname, int fd) {
 	map = calloc(nobj, sizeof(encioc_element_t));
 	ATF_REQUIRE(map != NULL);
 	r = ioctl(fd, ENCIOC_GETELMMAP, (caddr_t) map);
+	ATF_REQUIRE_EQ(r, 0);
 
 	snprintf(cmd, sizeof(cmd), "sg_ses -p1 %s", devname);
 	pipe = popen(cmd, "r");
@@ -255,10 +355,12 @@ static void do_getelmstat(const char *devname, int fd) {
 		r = ioctl(fd, ENCIOC_GETELMSTAT, (caddr_t)&e_status);
 		ATF_REQUIRE_EQ(r, 0);
 
+		// Compare the common status field
 		ATF_CHECK_EQ(e_status.cstat[0], status >> 24);
-		ATF_CHECK_EQ(e_status.cstat[1], (status >> 16) & 0xFF);
-		ATF_CHECK_EQ(e_status.cstat[2], (status >> 8) & 0xFF);
-		ATF_CHECK_EQ(e_status.cstat[3], status & 0xFF);
+		/*
+		 * Ignore the other fields, because some have values that can
+		 * change frequently (voltage, temperature, etc)
+		 */
 
 		pclose(pipe);
 	}
@@ -437,13 +539,13 @@ ATF_TP_ADD_TCS(tp)
 	 *
 	 */
 	ATF_TP_ADD_TC(tp, getelmdesc);
+	ATF_TP_ADD_TC(tp, getelmdevnames);
 	ATF_TP_ADD_TC(tp, getelmmap);
 	ATF_TP_ADD_TC(tp, getelmstat);
 	ATF_TP_ADD_TC(tp, getencid);
 	ATF_TP_ADD_TC(tp, getencname);
 	ATF_TP_ADD_TC(tp, getencstat);
 	ATF_TP_ADD_TC(tp, getnelm);
-	// TODO ENCIOC_GETELMDEVNAMES
 	// TODO ENCIOC_GETSTRING
 
 
