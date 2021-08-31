@@ -40,38 +40,7 @@
 
 #include <cam/scsi/scsi_enc.h>
 
-typedef bool(*ses_cb)(const char *devname, int fd);
-
-// Run a test function on every available ses device
-static void
-for_each_ses_dev(ses_cb cb, int oflags)
-{
-	glob_t g;
-	int r;
-	unsigned i;
-	bool tested = false;
-
-	g.gl_pathc = 0;
-	g.gl_pathv = NULL;
-	g.gl_offs = 0;
-
-	r = glob("/dev/ses*", GLOB_NOSORT, NULL, &g);
-	ATF_REQUIRE_EQ(r, 0);
-
-	for(i = 0; i < g.gl_pathc; i++) {
-		int fd;
-
-		fd = open(g.gl_pathv[i], oflags);
-		ATF_REQUIRE(fd >= 0);
-		tested |= cb(g.gl_pathv[i], fd);
-		close(fd);
-	}
-
-	if (!tested)
-		atf_tc_skip("No supported devices found");
-
-	globfree(&g);
-}
+#include "common.h"
 
 static bool do_getelmdesc(const char *devname, int fd) {
 	regex_t re;
@@ -108,7 +77,7 @@ static bool do_getelmdesc(const char *devname, int fd) {
 		/* Remove trailing newline */
 		elen = strnlen(expected, sizeof(line) - matches[0].rm_eo);
 		expected[elen - 1] = '\0';
-		/* 
+		/*
 		 * Zero the result string.  XXX we wouldn't have to do this if
 		 * the kernel would nul-terminate the result.
 		 */
@@ -118,18 +87,27 @@ static bool do_getelmdesc(const char *devname, int fd) {
 		e_desc.elm_desc_str = actual;
 		r = ioctl(fd, ENCIOC_GETELMDESC, (caddr_t) &e_desc);
 		ATF_REQUIRE_EQ(r, 0);
-		ATF_CHECK_STREQ(expected, actual);
+		if (0 == strcmp("<empty>", expected)) {
+			/* sg_ses replaces "" with "<empty>" */
+			ATF_CHECK_STREQ("", actual);
+		} else
+			ATF_CHECK_STREQ(expected, actual);
 		elm_idx++;
 	}
 
-	ATF_CHECK_EQ_MSG(nobj, elm_idx,
-			"Did not find the expected number of element "
-			"descriptors in sg_ses's output");
-	pclose(pipe);
+	r = pclose(pipe);
 	regfree(&re);
 	free(actual);
+	if (r != 0) {
+		/* Probably an SGPIO device */
 
-	return (true);
+		return (false);
+	} else {
+		ATF_CHECK_EQ_MSG(nobj, elm_idx,
+				"Did not find the expected number of element "
+				"descriptors in sg_ses's output");
+		return (true);
+	}
 }
 
 ATF_TC(getelmdesc);
@@ -183,13 +161,14 @@ static bool do_getelmdevnames(const char *devname __unused, int fd) {
 		elmdn.elm_names_size = namesize;
 		elmdn.elm_devnames = namebuf;
 		namebuf[0] = '\0';
+		//fprintf(stderr, "devname=%s elm_idx=%d elm_type=%d\n", devname, elm_idx, map[elm_idx].elm_type);
 		r = ioctl(fd, ENCIOC_GETELMDEVNAMES, (caddr_t) &elmdn);
 		if (e_status.cstat[0] != SES_OBJSTAT_UNSUPPORTED &&
 		    e_status.cstat[0] != SES_OBJSTAT_NOTINSTALLED &&
 		    (map[elm_idx].elm_type == ELMTYP_DEVICE ||
 		     map[elm_idx].elm_type == ELMTYP_ARRAY_DEV))
 		{
-			ATF_CHECK_EQ(r, 0);
+			ATF_CHECK_EQ_MSG(r, 0, "devnames not found.  This could be due to a buggy ses driver, buggy ses controller, dead HDD, or an ATA HDD in a SAS slot");
 		} else {
 			ATF_CHECK(r != 0);
 		}
@@ -289,6 +268,12 @@ static bool do_getelmmap(const char *devname, int fd) {
 		if (r == 2) {
 			elm_type = elm_type_name2int(elm_type_name);
 			continue;
+		} else {
+			r = sscanf(line,
+			    "    Element type: vendor specific [0x%x], subenclosure id: %d",
+			    &elm_type, &subenc_id);
+			if (r == 2)
+				continue;
 		}
 		r = sscanf(line, "      number of possible elements: %d",
 		    &num_elm);
@@ -304,13 +289,17 @@ static bool do_getelmmap(const char *devname, int fd) {
 		}
 	}
 
-	ATF_CHECK_EQ_MSG(nobj, elm_idx,
-			"Did not find the expected number of element "
-			"descriptors in sg_ses's output");
-	pclose(pipe);
 	free(map);
-
-	return (true);
+	r = pclose(pipe);
+	if (r != 0) {
+		/* Probably an SGPIO device */
+		return (false);
+	} else {
+		ATF_CHECK_EQ_MSG(nobj, elm_idx,
+				"Did not find the expected number of element "
+				"descriptors in sg_ses's output");
+		return (true);
+	}
 }
 
 ATF_TC(getelmmap);
@@ -345,6 +334,7 @@ static bool do_getelmstat(const char *devname, int fd) {
 		FILE *pipe;
 		char cmd[256];
 		uint32_t status;
+		int pr;
 
 		if (last_elm_type != map[elm_idx].elm_type)
 			elm_subidx = -1;
@@ -356,6 +346,12 @@ static bool do_getelmstat(const char *devname, int fd) {
 		pipe = popen(cmd, "r");
 		ATF_REQUIRE(pipe != NULL);
 		r = fscanf(pipe, "0x%x", &status);
+		pr = pclose(pipe);
+		if (pr != 0) {
+			/* Probably an SGPIO device */
+			free(map);
+			return (false);
+		}
 		ATF_REQUIRE_EQ(r, 1);
 
 		memset(&e_status, 0, sizeof(e_status));
@@ -369,8 +365,6 @@ static bool do_getelmstat(const char *devname, int fd) {
 		 * Ignore the other fields, because some have values that can
 		 * change frequently (voltage, temperature, etc)
 		 */
-
-		pclose(pipe);
 	}
 	free(map);
 
@@ -396,24 +390,33 @@ static bool do_getencid(const char *devname, int fd) {
 	char cmd[256];
 	char encid[32];
 	char line[256];
-	int r;
+	char sg_encid[32];
+	int r, sg_ses_r;
 
-	snprintf(cmd, sizeof(cmd), "sg_ses -p1 %s "
-		"| awk '/enclosure logical identifier/ {printf $NF}'",
-		devname);
+	snprintf(cmd, sizeof(cmd), "sg_ses -p1 %s", devname);
 	pipe = popen(cmd, "r");
 	ATF_REQUIRE(pipe != NULL);
-	ATF_REQUIRE(NULL != fgets(line, sizeof(line), pipe));
+	sg_encid[0] = '\0';
+	while(NULL != fgets(line, sizeof(line), pipe)) {
+		const char *f = "      enclosure logical identifier (hex): %s";
+
+		if (1 == fscanf(pipe, f, sg_encid))
+			break;
+	}
+	sg_ses_r = pclose(pipe);
 
 	stri.bufsiz = sizeof(encid);
 	stri.buf = &encid[0];
 	r = ioctl(fd, ENCIOC_GETENCID, (caddr_t) &stri);
 	ATF_REQUIRE_EQ(r, 0);
-	ATF_CHECK_STREQ(line, (char*)stri.buf);
-
-	pclose(pipe);
-
-	return (true);
+	if (sg_ses_r == 0) {
+		ATF_REQUIRE(sg_encid[0] != '\0');
+		ATF_CHECK_STREQ(sg_encid, (char*)stri.buf);
+		return (true);
+	} else {
+		/* Probably SGPIO; sg_ses unsupported */
+		return (false);
+	}
 }
 
 ATF_TC(getencid);
@@ -445,16 +448,19 @@ static bool do_getencname(const char *devname, int fd) {
 	pipe = popen(cmd, "r");
 	ATF_REQUIRE(pipe != NULL);
 	ATF_REQUIRE(NULL != fgets(line, sizeof(line), pipe));
+	pclose(pipe);
 
 	stri.bufsiz = sizeof(encname);
 	stri.buf = &encname[0];
 	r = ioctl(fd, ENCIOC_GETENCNAME, (caddr_t) &stri);
 	ATF_REQUIRE_EQ(r, 0);
-	ATF_CHECK_STREQ(line, (char*)stri.buf);
-
-	pclose(pipe);
-
-	return (true);
+	if (strlen(line) < 3) {
+		// Probably an SGPIO device, INQUIRY unsupported
+		return (false);
+	} else {
+		ATF_CHECK_STREQ(line, (char*)stri.buf);
+		return (true);
+	}
 }
 
 ATF_TC(getencname);
@@ -484,16 +490,18 @@ static bool do_getencstat(const char *devname, int fd) {
 	r = fscanf(pipe,
 	    "  INVOP=%hhu, INFO=%hhu, NON-CRIT=%hhu, CRIT=%hhu, UNRECOV=%hhu",
 	    &invop, &info, &noncrit, &crit, &unrecov);
-	ATF_REQUIRE_EQ(r, 5);
-
-	r = ioctl(fd, ENCIOC_GETENCSTAT, (caddr_t) &estat);
-	ATF_REQUIRE_EQ(r, 0);
-	e = (invop << 4) | (info << 3) | (noncrit << 2) | (crit << 1) | unrecov;
-	ATF_CHECK_EQ(estat, e);
-
 	pclose(pipe);
-
-	return (true);
+	if (r != 5) {
+		/* Probably on SGPIO device */
+		return (false);
+	} else {
+		r = ioctl(fd, ENCIOC_GETENCSTAT, (caddr_t) &estat);
+		ATF_REQUIRE_EQ(r, 0);
+		/* Exclude the info bit because it changes frequently */
+		e = (invop << 4) | (noncrit << 2) | (crit << 1) | unrecov;
+		ATF_CHECK_EQ(estat & ~0x08, e);
+		return (true);
+	}
 }
 
 ATF_TC(getencstat);
@@ -513,25 +521,33 @@ static bool do_getnelm(const char *devname, int fd) {
 	FILE *pipe;
 	char cmd[256];
 	char line[256];
-	unsigned nobj, expected;
-	int r;
+	unsigned nobj, expected = 0;
+	int r, sg_ses_r;
 
-	snprintf(cmd, sizeof(cmd), "sg_ses -p1 %s | awk '"
-		"/number of possible elements:/ {nelm = nelm + 1 + $NF} "
-		"END {print(nelm)}'"
-		, devname);
+	snprintf(cmd, sizeof(cmd), "sg_ses -p1 %s", devname);
 	pipe = popen(cmd, "r");
 	ATF_REQUIRE(pipe != NULL);
-	ATF_REQUIRE(NULL != fgets(line, sizeof(line), pipe));
-	expected = atoi(line);
+
+	while(NULL != fgets(line, sizeof(line), pipe)) {
+		unsigned nelm;
+
+		if (1 == fscanf(pipe, "      number of possible elements: %u",
+		    &nelm))
+		{
+			expected += 1 + nelm;	// +1 for the Overall element
+		}
+	}
+	sg_ses_r = pclose(pipe);
 
 	r = ioctl(fd, ENCIOC_GETNELM, (caddr_t) &nobj);
 	ATF_REQUIRE_EQ(r, 0);
-	ATF_CHECK_EQ(expected, nobj);
-
-	pclose(pipe);
-
-	return (true);
+	if (sg_ses_r == 0) {
+		ATF_CHECK_EQ(expected, nobj);
+		return (true);
+	} else {
+		/* Probably SGPIO, sg_ses unsupported */
+		return (false);
+	}
 }
 
 ATF_TC(getnelm);
@@ -555,15 +571,15 @@ static bool do_getstring(const char *devname, int fd) {
 	encioc_string_t str_in;
 	int r;
 
-	sg_ses_buf = malloc(65536);
+	sg_ses_buf = malloc(65535);
 	ATF_REQUIRE(sg_ses_buf != NULL);
-	ses_buf = malloc(65536);
+	ses_buf = malloc(65535);
 	ATF_REQUIRE(ses_buf != NULL);
 
 	snprintf(cmd, sizeof(cmd), "sg_ses -p4 -rr %s", devname);
 	pipe = popen(cmd, "r");
 	ATF_REQUIRE(pipe != NULL);
-	sg_ses_count = fread(sg_ses_buf, 1, 65536, pipe);
+	sg_ses_count = fread(sg_ses_buf, 1, 65535, pipe);
 	r = pclose(pipe);
 	if (r != 0) {
 		// This SES device does not support the STRINGIN diagnostic page
@@ -571,12 +587,13 @@ static bool do_getstring(const char *devname, int fd) {
 	}
 	ATF_REQUIRE(sg_ses_count > 0);
 
-	str_in.bufsiz = 65536;
+	str_in.bufsiz = 65535;
 	str_in.buf = ses_buf;
 	r = ioctl(fd, ENCIOC_GETSTRING, (caddr_t) &str_in);
 	ATF_REQUIRE_EQ(r, 0);
+	ATF_CHECK_EQ(sg_ses_count, (ssize_t)str_in.bufsiz);
+	ATF_CHECK_EQ(0, memcmp(sg_ses_buf, ses_buf, str_in.bufsiz));
 
-	printf("sg_ses read %zd, ses read %zd\n", sg_ses_count, str_in.bufsiz);
 	free(ses_buf);
 	free(sg_ses_buf);
 
@@ -593,7 +610,8 @@ ATF_TC_HEAD(getstring, tc)
 }
 ATF_TC_BODY(getstring, tc)
 {
-	for_each_ses_dev(do_getstring, O_RDONLY);
+	atf_tc_expect_fail("Bug 258188 ENCIO_GETSTRING does not set the string's returned size");
+	for_each_ses_dev(do_getstring, O_RDWR);
 }
 
 ATF_TP_ADD_TCS(tp)

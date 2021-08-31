@@ -40,40 +40,10 @@
 
 #include <cam/scsi/scsi_enc.h>
 
-typedef void(*ses_cb)(const char *devname, int fd);
-
-#define	ENCSTAT_LINK	"encstat_link"
-
-// Run a test function on every available ses device
-/*static void*/
-/*for_each_ses_dev(ses_cb cb)*/
-/*{*/
-	/*glob_t g;*/
-	/*int r;*/
-	/*unsigned i;*/
-
-	/*g.gl_pathc = 0;*/
-	/*g.gl_pathv = NULL;*/
-	/*g.gl_offs = 0;*/
-
-	/*r = glob("/dev/ses*", GLOB_NOSORT, NULL, &g);*/
-	/*ATF_REQUIRE_EQ(r, 0);*/
-	/*if (g.gl_pathc == 0)*/
-		/*atf_tc_skip("No ses devices found");*/
-
-	/*for(i = 0; i < g.gl_pathc; i++) {*/
-		/*int fd;*/
-
-		/*fd = open(g.gl_pathv[i], O_RDWR);*/
-		/*ATF_REQUIRE(fd >= 0);*/
-		/*cb(g.gl_pathv[i], fd);*/
-		/*close(fd);*/
-	/*}*/
-
-	/*globfree(&g);*/
-/*}*/
+#include "common.h"
 
 // Run a test function on just one ses device
+#if 0
 static void
 for_one_ses_dev(ses_cb cb)
 {
@@ -96,40 +66,49 @@ for_one_ses_dev(ses_cb cb)
 
 	globfree(&g);
 }
+#endif
 
-static void do_setencstat(const char *devname __unused, int fd) {
-	unsigned char initial, commanded, altered;
-	int r;
-	char buf[80];
+static bool do_setencstat(const char *devname __unused, int fd) {
+	unsigned char encstat;
+	int r, i;
+	bool worked = false;
 
-	r = ioctl(fd, ENCIOC_GETENCSTAT, (caddr_t) &initial);
-	ATF_REQUIRE_EQ(r, 0);
-
-	/* Store the initial state in a symlink for future cleanup */
-	snprintf(buf, sizeof(buf), "%u", initial);
-	ATF_REQUIRE_EQ(0, symlink(buf, ENCSTAT_LINK));
-	
-	/* Flip the info bit */
-	commanded = initial ^= 0x80;
-	r = ioctl(fd, ENCIOC_SETENCSTAT, (caddr_t) &commanded);
+	/*
+	 * SES provides no way to read the current setting of the enclosure
+	 * control page common status bits.  So we'll blindly set CRIT.
+	 */
+	encstat = 1 << SES_CTRL_PAGE_CRIT_SHIFT;
+	r = ioctl(fd, ENCIOC_SETENCSTAT, (caddr_t) &encstat);
 	ATF_REQUIRE_EQ(r, 0);
 
 	/* Check that the status has changed */
-	r = ioctl(fd, ENCIOC_GETENCSTAT, (caddr_t) &altered);
-	ATF_REQUIRE_EQ(r, 0);
-	ATF_CHECK_EQ(commanded, altered);
-
-
+	for (i = 0; i < 10; i++) {
+		r = ioctl(fd, ENCIOC_GETENCSTAT, (caddr_t) &encstat);
+		ATF_REQUIRE_EQ(r, 0);
+		if (encstat & SES_CTRL_PAGE_CRIT_MASK) {
+			worked = true;
+			break;
+		}
+		usleep(100000);
+	}
+	if (!worked) {
+		/* Some enclosures don't support setting the enclosure status */
+		return (false);
+	} else
+		return (true);
 }
 
-static void do_setencstat_cleanup(const char *devname __unused, int fd) {
-	int n;
-	char buf[80];
+static bool do_setencstat_cleanup(const char *devname __unused, int fd) {
 	unsigned char encstat;
 
-	n = readlink(ENCSTAT_LINK, buf, sizeof(buf) - 1);
-	encstat = atoi(buf);
+	/*
+	 * SES provides no way to read the current setting of the enclosure
+	 * control page common status bits.  So we don't know what they were
+	 * set to before the test.  We'll blindly clear all bits.
+	 */
+	encstat = 0;
 	ioctl(fd, ENCIOC_SETENCSTAT, (caddr_t) &encstat);
+	return (true);
 }
 
 ATF_TC_WITH_CLEANUP(setencstat);
@@ -140,12 +119,11 @@ ATF_TC_HEAD(setencstat, tc)
 }
 ATF_TC_BODY(setencstat, tc)
 {
-	// XXX Need to test this on an enclosure that supports it.
-	for_one_ses_dev(do_setencstat);
+	for_each_ses_dev(do_setencstat, O_RDWR);
 }
 ATF_TC_CLEANUP(setencstat, tc)
 {
-	for_one_ses_dev(do_setencstat_cleanup);
+	for_each_ses_dev(do_setencstat_cleanup, O_RDWR);
 }
 
 ATF_TP_ADD_TCS(tp)
