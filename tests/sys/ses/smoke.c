@@ -40,7 +40,7 @@
 
 #include <cam/scsi/scsi_enc.h>
 
-typedef void(*ses_cb)(const char *devname, int fd);
+typedef bool(*ses_cb)(const char *devname, int fd);
 
 // Run a test function on every available ses device
 static void
@@ -49,6 +49,7 @@ for_each_ses_dev(ses_cb cb, int oflags)
 	glob_t g;
 	int r;
 	unsigned i;
+	bool tested = false;
 
 	g.gl_pathc = 0;
 	g.gl_pathv = NULL;
@@ -56,22 +57,23 @@ for_each_ses_dev(ses_cb cb, int oflags)
 
 	r = glob("/dev/ses*", GLOB_NOSORT, NULL, &g);
 	ATF_REQUIRE_EQ(r, 0);
-	if (g.gl_pathc == 0)
-		atf_tc_skip("No ses devices found");
 
 	for(i = 0; i < g.gl_pathc; i++) {
 		int fd;
 
 		fd = open(g.gl_pathv[i], oflags);
 		ATF_REQUIRE(fd >= 0);
-		cb(g.gl_pathv[i], fd);
+		tested |= cb(g.gl_pathv[i], fd);
 		close(fd);
 	}
+
+	if (!tested)
+		atf_tc_skip("No supported devices found");
 
 	globfree(&g);
 }
 
-static void do_getelmdesc(const char *devname, int fd) {
+static bool do_getelmdesc(const char *devname, int fd) {
 	regex_t re;
 	FILE *pipe;
 	char cmd[256];
@@ -126,6 +128,8 @@ static void do_getelmdesc(const char *devname, int fd) {
 	pclose(pipe);
 	regfree(&re);
 	free(actual);
+
+	return (true);
 }
 
 ATF_TC(getelmdesc);
@@ -141,7 +145,7 @@ ATF_TC_BODY(getelmdesc, tc)
 	for_each_ses_dev(do_getelmdesc, O_RDONLY);
 }
 
-static void do_getelmdevnames(const char *devname __unused, int fd) {
+static bool do_getelmdevnames(const char *devname __unused, int fd) {
 	encioc_element_t *map;
 	unsigned nobj;
 	const size_t namesize = 128;
@@ -225,6 +229,8 @@ static void do_getelmdevnames(const char *devname __unused, int fd) {
 	}
 	free(map);
 	free(namebuf);
+
+	return (true);
 }
 
 ATF_TC(getelmdevnames);
@@ -253,7 +259,7 @@ elm_type_name2int(const char *name) {
 	return (-1);
 }
 
-static void do_getelmmap(const char *devname, int fd) {
+static bool do_getelmmap(const char *devname, int fd) {
 	encioc_element_t *map;
 	FILE *pipe;
 	char cmd[256];
@@ -303,6 +309,8 @@ static void do_getelmmap(const char *devname, int fd) {
 			"descriptors in sg_ses's output");
 	pclose(pipe);
 	free(map);
+
+	return (true);
 }
 
 ATF_TC(getelmmap);
@@ -318,7 +326,7 @@ ATF_TC_BODY(getelmmap, tc)
 	for_each_ses_dev(do_getelmmap, O_RDONLY);
 }
 
-static void do_getelmstat(const char *devname, int fd) {
+static bool do_getelmstat(const char *devname, int fd) {
 	encioc_element_t *map;
 	unsigned elm_idx;
 	unsigned nobj;
@@ -365,6 +373,8 @@ static void do_getelmstat(const char *devname, int fd) {
 		pclose(pipe);
 	}
 	free(map);
+
+	return (true);
 }
 
 ATF_TC(getelmstat);
@@ -380,7 +390,7 @@ ATF_TC_BODY(getelmstat, tc)
 	for_each_ses_dev(do_getelmstat, O_RDONLY);
 }
 
-static void do_getencid(const char *devname, int fd) {
+static bool do_getencid(const char *devname, int fd) {
 	encioc_string_t stri;
 	FILE *pipe;
 	char cmd[256];
@@ -402,6 +412,8 @@ static void do_getencid(const char *devname, int fd) {
 	ATF_CHECK_STREQ(line, (char*)stri.buf);
 
 	pclose(pipe);
+
+	return (true);
 }
 
 ATF_TC(getencid);
@@ -417,7 +429,7 @@ ATF_TC_BODY(getencid, tc)
 	for_each_ses_dev(do_getencid, O_RDONLY);
 }
 
-static void do_getencname(const char *devname, int fd) {
+static bool do_getencname(const char *devname, int fd) {
 	encioc_string_t stri;
 	FILE *pipe;
 	char cmd[256];
@@ -441,6 +453,8 @@ static void do_getencname(const char *devname, int fd) {
 	ATF_CHECK_STREQ(line, (char*)stri.buf);
 
 	pclose(pipe);
+
+	return (true);
 }
 
 ATF_TC(getencname);
@@ -456,7 +470,7 @@ ATF_TC_BODY(getencname, tc)
 	for_each_ses_dev(do_getencname, O_RDONLY);
 }
 
-static void do_getencstat(const char *devname, int fd) {
+static bool do_getencstat(const char *devname, int fd) {
 	FILE *pipe;
 	char cmd[256];
 	unsigned char e, estat, invop, info, noncrit, crit, unrecov;
@@ -478,6 +492,8 @@ static void do_getencstat(const char *devname, int fd) {
 	ATF_CHECK_EQ(estat, e);
 
 	pclose(pipe);
+
+	return (true);
 }
 
 ATF_TC(getencstat);
@@ -493,7 +509,7 @@ ATF_TC_BODY(getencstat, tc)
 	for_each_ses_dev(do_getencstat, O_RDONLY);
 }
 
-static void do_getnelm(const char *devname, int fd) {
+static bool do_getnelm(const char *devname, int fd) {
 	FILE *pipe;
 	char cmd[256];
 	char line[256];
@@ -514,6 +530,8 @@ static void do_getnelm(const char *devname, int fd) {
 	ATF_CHECK_EQ(expected, nobj);
 
 	pclose(pipe);
+
+	return (true);
 }
 
 ATF_TC(getnelm);
@@ -527,6 +545,55 @@ ATF_TC_HEAD(getnelm, tc)
 ATF_TC_BODY(getnelm, tc)
 {
 	for_each_ses_dev(do_getnelm, O_RDONLY);
+}
+
+static bool do_getstring(const char *devname, int fd) {
+	FILE *pipe;
+	char cmd[256];
+	char *sg_ses_buf, *ses_buf;
+	ssize_t sg_ses_count;
+	encioc_string_t str_in;
+	int r;
+
+	sg_ses_buf = malloc(65536);
+	ATF_REQUIRE(sg_ses_buf != NULL);
+	ses_buf = malloc(65536);
+	ATF_REQUIRE(ses_buf != NULL);
+
+	snprintf(cmd, sizeof(cmd), "sg_ses -p4 -rr %s", devname);
+	pipe = popen(cmd, "r");
+	ATF_REQUIRE(pipe != NULL);
+	sg_ses_count = fread(sg_ses_buf, 1, 65536, pipe);
+	r = pclose(pipe);
+	if (r != 0) {
+		// This SES device does not support the STRINGIN diagnostic page
+		return (false);
+	}
+	ATF_REQUIRE(sg_ses_count > 0);
+
+	str_in.bufsiz = 65536;
+	str_in.buf = ses_buf;
+	r = ioctl(fd, ENCIOC_GETSTRING, (caddr_t) &str_in);
+	ATF_REQUIRE_EQ(r, 0);
+
+	printf("sg_ses read %zd, ses read %zd\n", sg_ses_count, str_in.bufsiz);
+	free(ses_buf);
+	free(sg_ses_buf);
+
+	return (true);
+}
+
+ATF_TC(getstring);
+ATF_TC_HEAD(getstring, tc)
+{
+	atf_tc_set_md_var(tc, "descr",
+	    "Compare ENCIOC_GETSTRING's output to sg3_utils'");
+	atf_tc_set_md_var(tc, "require.user", "root");
+	atf_tc_set_md_var(tc, "require.progs", "sg_ses");
+}
+ATF_TC_BODY(getstring, tc)
+{
+	for_each_ses_dev(do_getstring, O_RDONLY);
 }
 
 ATF_TP_ADD_TCS(tp)
@@ -546,8 +613,7 @@ ATF_TP_ADD_TCS(tp)
 	ATF_TP_ADD_TC(tp, getencname);
 	ATF_TP_ADD_TC(tp, getencstat);
 	ATF_TP_ADD_TC(tp, getnelm);
-	// TODO ENCIOC_GETSTRING
-
+	ATF_TP_ADD_TC(tp, getstring);
 
 	return (atf_no_error());
 }
