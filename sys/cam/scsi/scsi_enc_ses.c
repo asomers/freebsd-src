@@ -2880,6 +2880,7 @@ ses_handle_string(enc_softc_t *enc, encioc_string_t *sstr, int ioc)
 	ses_cache = enc_cache->private;
 
 	/* Implement SES2r20 6.1.6 */
+	/* TODO: truncate bufsize if it's too large */
 	if (sstr->bufsiz > 0xffff)
 		return (EINVAL); /* buffer size too large */
 

@@ -66,48 +66,12 @@ for_one_ses_dev(ses_cb cb)
 	globfree(&g);
 }
 
-/*
- * Make a filename suitable for use in a cleanup routine, for the given device
- * name.
- */
-static void
-mk_fname(char *buf, size_t bufsiz, const char *devname) {
-	size_t s;
-
-	s = strcspn(devname, "0123456789");
-	snprintf(buf, bufsiz, "initial.%s", devname + s);
-	fprintf(stderr, "devname=%s s=%zu initial=%s\n", devname, s, buf);
-}
-
-static bool do_setelmstat(const char *devname, int fd) {
-	FILE *initial, *pipe;
+static bool do_setelmstat(const char *devname __unused, int fd) {
 	encioc_element_t *map;
 	unsigned elm_idx;
 	unsigned nobj;
 	int r;
-	char cmd[256], buf[256];
-	char fname[80];
-	size_t z;
 	elm_type_t last_elm_type = -1;
-
-	mk_fname(fname, sizeof(fname), devname);
-	initial = fopen(fname, "w+x");
-	ATF_REQUIRE(initial != NULL);
-	snprintf(cmd, sizeof(cmd), "sg_ses -rp2 %s", devname);
-	pipe = popen(cmd, "r");
-	ATF_REQUIRE(pipe != NULL);
-	while ((z = fread(buf, 1, sizeof(buf), pipe)) > 0) {
-		size_t y = 0;
-		do {
-			y += fwrite(buf, 1, z, initial);
-		} while (y < z) ;
-	}
-	fclose(initial);
-	r = pclose(pipe);
-	if (r != 0) {
-		/* Probably an SGPIO device */
-		return (false);
-	}
 
 	r = ioctl(fd, ENCIOC_GETNELM, (caddr_t) &nobj);
 	ATF_REQUIRE_EQ(r, 0);
@@ -116,7 +80,6 @@ static bool do_setelmstat(const char *devname, int fd) {
 	ATF_REQUIRE(map != NULL);
 	r = ioctl(fd, ENCIOC_GETELMMAP, (caddr_t) map);
 
-	// TODO: skip overall elements
 	/* Set the IDENT bit for every disk slot */
 	for (elm_idx = 0; elm_idx < nobj; elm_idx++) {
 		encioc_elm_status_t elmstat;
@@ -185,26 +148,48 @@ static bool do_setelmstat(const char *devname, int fd) {
 	return (true);
 }
 
-static bool do_setelmstat_cleanup(const char *devname __unused, int fd __unused) {
-	FILE *initial, *pipe;
-	char cmd[256], buf[256];
-	char fname[80];
-	size_t z;
+/*
+ * sg_ses doesn't provide "dump and restore" functionality.  The closest is to
+ * dump status page 2, then manually edit the file to set every individual
+ * element select bit, then load the entire file.  But that is much too hard.
+ * Instead, we'll just clear every ident bit.
+ */
+static bool
+do_setelmstat_cleanup(const char *devname __unused, int fd __unused) {
+	encioc_element_t *map;
+	unsigned elm_idx;
+	unsigned nobj;
+	int r;
+	elm_type_t last_elm_type = -1;
 
-	mk_fname(fname, sizeof(fname), devname);
-	initial = fopen(fname, "r");
-	ATF_REQUIRE(initial != NULL);
-	snprintf(cmd, sizeof(cmd), "sg_ses --control -rp2 -d - %s", devname);
-	pipe = popen(cmd, "w");
-	ATF_REQUIRE(pipe != NULL);
-	while ((z = fread(buf, 1, sizeof(buf), initial)) > 0) {
-		size_t y = 0;
-		do {
-			y += fwrite(buf, 1, z, pipe);
-		} while (y < z) ;
+	r = ioctl(fd, ENCIOC_GETNELM, (caddr_t) &nobj);
+	ATF_REQUIRE_EQ(r, 0);
+
+	map = calloc(nobj, sizeof(encioc_element_t));
+	ATF_REQUIRE(map != NULL);
+	r = ioctl(fd, ENCIOC_GETELMMAP, (caddr_t) map);
+
+	/* Clear the IDENT bit for every disk slot */
+	for (elm_idx = 0; elm_idx < nobj; elm_idx++) {
+		encioc_elm_status_t elmstat;
+		struct ses_ctrl_dev_slot *cslot;
+
+		if (last_elm_type != map[elm_idx].elm_type) {
+			/* skip overall elements */
+			last_elm_type = map[elm_idx].elm_type;
+			continue;
+		}
+		elmstat.elm_idx = elm_idx;
+		if (map[elm_idx].elm_type == ELMTYP_DEVICE ||
+		    map[elm_idx].elm_type == ELMTYP_ARRAY_DEV)
+		{
+			cslot = (struct ses_ctrl_dev_slot*)&elmstat.cstat[0];
+
+			ses_ctrl_common_set_select(&cslot->common, 1);
+			ses_ctrl_dev_slot_set_rqst_ident(cslot, 0);
+			r = ioctl(fd, ENCIOC_SETELMSTAT, (caddr_t)&elmstat);
+		}
 	}
-	pclose(pipe);
-	fclose(initial);
 
 	return(true);
 }
