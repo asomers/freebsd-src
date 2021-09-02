@@ -43,7 +43,6 @@
 #include "common.h"
 
 // Run a test function on just one ses device
-#if 0
 static void
 for_one_ses_dev(ses_cb cb)
 {
@@ -66,7 +65,166 @@ for_one_ses_dev(ses_cb cb)
 
 	globfree(&g);
 }
-#endif
+
+/*
+ * Make a filename suitable for use in a cleanup routine, for the given device
+ * name.
+ */
+static void
+mk_fname(char *buf, size_t bufsiz, const char *devname) {
+	size_t s;
+
+	s = strcspn(devname, "0123456789");
+	snprintf(buf, bufsiz, "initial.%s", devname + s);
+	fprintf(stderr, "devname=%s s=%zu initial=%s\n", devname, s, buf);
+}
+
+static bool do_setelmstat(const char *devname, int fd) {
+	FILE *initial, *pipe;
+	encioc_element_t *map;
+	unsigned elm_idx;
+	unsigned nobj;
+	int r;
+	char cmd[256], buf[256];
+	char fname[80];
+	size_t z;
+	elm_type_t last_elm_type = -1;
+
+	mk_fname(fname, sizeof(fname), devname);
+	initial = fopen(fname, "w+x");
+	ATF_REQUIRE(initial != NULL);
+	snprintf(cmd, sizeof(cmd), "sg_ses -rp2 %s", devname);
+	pipe = popen(cmd, "r");
+	ATF_REQUIRE(pipe != NULL);
+	while ((z = fread(buf, 1, sizeof(buf), pipe)) > 0) {
+		size_t y = 0;
+		do {
+			y += fwrite(buf, 1, z, initial);
+		} while (y < z) ;
+	}
+	fclose(initial);
+	r = pclose(pipe);
+	if (r != 0) {
+		/* Probably an SGPIO device */
+		return (false);
+	}
+
+	r = ioctl(fd, ENCIOC_GETNELM, (caddr_t) &nobj);
+	ATF_REQUIRE_EQ(r, 0);
+
+	map = calloc(nobj, sizeof(encioc_element_t));
+	ATF_REQUIRE(map != NULL);
+	r = ioctl(fd, ENCIOC_GETELMMAP, (caddr_t) map);
+
+	// TODO: skip overall elements
+	/* Set the IDENT bit for every disk slot */
+	for (elm_idx = 0; elm_idx < nobj; elm_idx++) {
+		encioc_elm_status_t elmstat;
+		struct ses_ctrl_dev_slot *cslot;
+		struct ses_status_dev_slot *sslot;
+
+		if (last_elm_type != map[elm_idx].elm_type) {
+			/* skip overall elements */
+			last_elm_type = map[elm_idx].elm_type;
+			continue;
+		}
+		elmstat.elm_idx = elm_idx;
+		if (map[elm_idx].elm_type == ELMTYP_DEVICE ||
+		    map[elm_idx].elm_type == ELMTYP_ARRAY_DEV)
+		{
+			r = ioctl(fd, ENCIOC_GETELMSTAT, (caddr_t)&elmstat);
+			ATF_REQUIRE_EQ(r, 0);
+
+			cslot = (struct ses_ctrl_dev_slot*)&elmstat.cstat[0];
+			sslot = (struct ses_status_dev_slot*)&elmstat.cstat[0];
+
+			ses_ctrl_common_set_select(&cslot->common, 1);
+			ses_ctrl_dev_slot_set_rqst_ident(cslot, 1);
+			r = ioctl(fd, ENCIOC_SETELMSTAT, (caddr_t)&elmstat);
+			ATF_REQUIRE_EQ(r, 0);
+		}
+	}
+
+	/* Check the IDENT bit for every disk slot */
+	last_elm_type = -1;
+	for (elm_idx = 0; elm_idx < nobj; elm_idx++) {
+		encioc_elm_status_t elmstat;
+		struct ses_status_dev_slot *sslot;
+
+		if (last_elm_type != map[elm_idx].elm_type) {
+			/* skip overall elements */
+			last_elm_type = map[elm_idx].elm_type;
+			continue;
+		}
+		elmstat.elm_idx = elm_idx;
+		if (map[elm_idx].elm_type == ELMTYP_DEVICE ||
+		    map[elm_idx].elm_type == ELMTYP_ARRAY_DEV)
+		{
+			int i;
+
+			r = ioctl(fd, ENCIOC_GETELMSTAT, (caddr_t)&elmstat);
+			ATF_REQUIRE_EQ(r, 0);
+
+			sslot = (struct ses_status_dev_slot*)&elmstat.cstat[0];
+
+			for (i = 0; i < 10; i++) {
+				r = ioctl(fd, ENCIOC_GETELMSTAT,
+				    (caddr_t)&elmstat);
+				ATF_REQUIRE_EQ(r, 0);
+				if (0 == ses_status_dev_slot_get_ident(sslot)) {
+					/* Needs more time to take effect */
+					usleep(100000);
+				}
+			}
+			ATF_CHECK(ses_status_dev_slot_get_ident(sslot) != 0);
+
+		}
+	}
+
+	free(map);
+	return (true);
+}
+
+static bool do_setelmstat_cleanup(const char *devname __unused, int fd __unused) {
+	FILE *initial, *pipe;
+	char cmd[256], buf[256];
+	char fname[80];
+	size_t z;
+
+	mk_fname(fname, sizeof(fname), devname);
+	initial = fopen(fname, "r");
+	ATF_REQUIRE(initial != NULL);
+	snprintf(cmd, sizeof(cmd), "sg_ses --control -rp2 -d - %s", devname);
+	pipe = popen(cmd, "w");
+	ATF_REQUIRE(pipe != NULL);
+	while ((z = fread(buf, 1, sizeof(buf), initial)) > 0) {
+		size_t y = 0;
+		do {
+			y += fwrite(buf, 1, z, pipe);
+		} while (y < z) ;
+	}
+	pclose(pipe);
+	fclose(initial);
+
+	return(true);
+}
+
+
+ATF_TC_WITH_CLEANUP(setelmstat);
+ATF_TC_HEAD(setelmstat, tc)
+{
+	atf_tc_set_md_var(tc, "descr", "Exercise ENCIOC_SETELMSTAT");
+	atf_tc_set_md_var(tc, "require.user", "root");
+}
+ATF_TC_BODY(setelmstat, tc)
+{
+	for_one_ses_dev(do_setelmstat);
+}
+ATF_TC_CLEANUP(setelmstat, tc)
+{
+	for_one_ses_dev(do_setelmstat_cleanup);
+}
+
 
 static bool do_setencstat(const char *devname __unused, int fd) {
 	unsigned char encstat;
@@ -138,6 +296,7 @@ ATF_TP_ADD_TCS(tp)
 	 * * ENCIOC_SETSTRING because it's seriously unsafe!  It's normally
 	 *   used for stuff like firmware updates
 	 */
+	ATF_TP_ADD_TC(tp, setelmstat);
 	ATF_TP_ADD_TC(tp, setencstat);
 	// TODO ENCIOC_SETELMSTAT
 
