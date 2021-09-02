@@ -1,12 +1,9 @@
 PACKAGE=	tests
 
 TESTSDIR=	${TESTSBASE}/sys/ses
-BINDIR=         ${TESTSDIR}
 
-MAN=
-PROGS+=		helper
 ATF_TESTS_C+=	destructive
-ATF_TESTS_C+=	smoke
+ATF_TESTS_C+=	nondestructive
 
 # Some tests cases alter enclosure state, so they can't run concurrently.
 TEST_METADATA.destructive+= is_exclusive=true

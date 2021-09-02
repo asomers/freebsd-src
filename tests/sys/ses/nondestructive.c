@@ -161,7 +161,6 @@ static bool do_getelmdevnames(const char *devname __unused, int fd) {
 		elmdn.elm_names_size = namesize;
 		elmdn.elm_devnames = namebuf;
 		namebuf[0] = '\0';
-		//fprintf(stderr, "devname=%s elm_idx=%d elm_type=%d\n", devname, elm_idx, map[elm_idx].elm_type);
 		r = ioctl(fd, ENCIOC_GETELMDEVNAMES, (caddr_t) &elmdn);
 		if (e_status.cstat[0] != SES_OBJSTAT_UNSUPPORTED &&
 		    e_status.cstat[0] != SES_OBJSTAT_NOTINSTALLED &&
