@@ -31,6 +31,7 @@
  */
 
 extern "C" {
+#include <pthread.h>
 #include <unistd.h>
 }
 
@@ -294,6 +295,119 @@ TEST_F(Lookup, entry_cache_timeout)
 	nap();
 	/* The cache has timed out; VOP_LOOKUP should requery the daemon*/
 	ASSERT_EQ(0, access(FULLPATH, F_OK)) << strerror(errno);
+}
+
+static void* setattr0(void* arg __unused) {
+	ssize_t r;
+
+	r = truncate("mountpoint/some_file.txt", 5);
+	if (r >= 0)
+		return 0;
+	else
+		return (void*)(intptr_t)errno;
+}
+
+/*
+ * VOP_LOOKUP should discard attributes returned by the server if the were
+ * modified by VOP_SETATTR while the VOP_LOOKUP was in progress.
+ *
+ * Sequence of operations:
+ * * Thread 1 calls ftruncate, which acquires the vnode lock exclusively
+ * * The attribute cache expires.
+ * * Thread 2 calls stat, which does VOP_LOOKUP, which sends FUSE_LOOKUP to the
+ *   server.  The server replies with the old file length.  Thread 2 blocks
+ *   waiting for the vnode lock.
+ * * Thread 1 does FUSE_SETATTR to change the file's size and updates the
+ *   attribute cache.  Then it releases the vnode lock.
+ * * Thread 2 acquires the vnode lock.  At this point it must not add the
+ *   now-stale file size to the attribute cache.
+ *
+ * Regression test for https://bugs.freebsd.org/bugzilla/show_bug.cgi?id=259071
+ */
+TEST_F(Lookup, lookup_during_setattr)
+{
+	const char FULLPATH[] = "mountpoint/some_file.txt";
+	const char RELPATH[] = "some_file.txt";
+	Sequence seq;
+	uint64_t ino = 3;
+	uint64_t setattr_unique;
+	const uint64_t oldsize = 10;
+	const uint64_t newsize = 5;
+	pthread_t th0;
+	void *thr0_value;
+	struct stat sb;
+
+	EXPECT_LOOKUP(FUSE_ROOT_ID, RELPATH)
+	.InSequence(seq)
+	.WillOnce(Invoke(ReturnImmediate([=](auto in __unused, auto& out) {
+		/* The first lookup caches the entry for VOP_SETATTR */
+		SET_OUT_HEADER_LEN(out, entry);
+		out.body.entry.nodeid = ino;
+		out.body.entry.attr.size = oldsize;
+		out.body.entry.nodeid = ino;
+		out.body.entry.entry_valid_nsec = NAP_NS / 2;
+		out.body.entry.attr_valid_nsec = NAP_NS / 2;
+		out.body.entry.attr.ino = ino;
+		out.body.entry.attr.mode = S_IFREG | 0644;
+	})));
+	EXPECT_CALL(*m_mock, process(
+		ResultOf([=](auto in) {
+			return (in.header.opcode == FUSE_SETATTR &&
+				in.header.nodeid == ino);
+		}, Eq(true)),
+		_)
+	).InSequence(seq)
+	.WillOnce(Invoke([&](auto in, auto &out __unused) {
+		/*
+		 * FUSE_SETATTR changes the file size, but in order to simulate
+		 * a race, don't reply.  Instead, just save the unique for
+		 * later.
+		 */
+		setattr_unique = in.header.unique;
+	}));
+	EXPECT_LOOKUP(FUSE_ROOT_ID, RELPATH)
+	.InSequence(seq)
+	.WillOnce(Invoke([&](auto in __unused, auto& out) {
+		// First complete the lookup request, returning the old size
+		std::unique_ptr<mockfs_buf_out> out0(new mockfs_buf_out);
+		out0->header.unique = in.header.unique;
+		SET_OUT_HEADER_LEN(*out0, entry);
+		out0->body.entry.attr.mode = S_IFREG | 0644;
+		out0->body.entry.nodeid = ino;
+		out0->body.entry.entry_valid = UINT64_MAX;
+		out0->body.entry.attr_valid = UINT64_MAX;
+		out0->body.entry.attr.size = oldsize;
+		out.push_back(std::move(out0));
+
+		// Then, respond to the setattr request
+		std::unique_ptr<mockfs_buf_out> out1(new mockfs_buf_out);
+		out1->header.unique = setattr_unique;
+		SET_OUT_HEADER_LEN(*out1, attr);
+		out1->body.attr.attr.ino = ino;
+		out1->body.attr.attr.mode = S_IFREG | 0644;
+		out1->body.attr.attr.size = newsize;	// Changed size
+		out1->body.attr.attr_valid = UINT64_MAX;
+		out.push_back(std::move(out1));
+	}));
+
+	// Insert the file into the name cache
+	ASSERT_EQ(0, access(FULLPATH, F_OK)) << strerror(errno);
+
+	// Start the setattr thread
+	ASSERT_EQ(0, pthread_create(&th0, NULL, setattr0, NULL))
+		<< strerror(errno);
+
+	// Let the attr cache expire
+	nap();
+
+	// Lookup again, which will race with setattr
+	ASSERT_EQ(0, stat(FULLPATH, &sb)) << strerror(errno);
+
+	ASSERT_EQ((off_t)newsize, sb.st_size);
+
+	// truncate should've completed without error
+	pthread_join(th0, &thr0_value);
+	EXPECT_EQ(0, (intptr_t)thr0_value);
 }
 
 TEST_F(Lookup, ok)
