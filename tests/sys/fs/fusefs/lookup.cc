@@ -32,6 +32,7 @@
 
 extern "C" {
 #include <pthread.h>
+#include <semaphore.h>
 #include <unistd.h>
 }
 
@@ -336,16 +337,18 @@ TEST_F(Lookup, lookup_during_setattr)
 	pthread_t th0;
 	void *thr0_value;
 	struct stat sb;
+	static sem_t sem;
+
+	ASSERT_EQ(0, sem_init(&sem, 0, 0)) << strerror(errno);
 
 	EXPECT_LOOKUP(FUSE_ROOT_ID, RELPATH)
 	.InSequence(seq)
 	.WillOnce(Invoke(ReturnImmediate([=](auto in __unused, auto& out) {
-		/* The first lookup caches the entry for VOP_SETATTR */
+		/* Called by VOP_SETATTR, caches attributes but not entries */
 		SET_OUT_HEADER_LEN(out, entry);
 		out.body.entry.nodeid = ino;
 		out.body.entry.attr.size = oldsize;
 		out.body.entry.nodeid = ino;
-		//out.body.entry.entry_valid_nsec = NAP_NS / 2;
 		out.body.entry.attr_valid_nsec = NAP_NS / 2;
 		out.body.entry.attr.ino = ino;
 		out.body.entry.attr.mode = S_IFREG | 0644;
@@ -357,24 +360,20 @@ TEST_F(Lookup, lookup_during_setattr)
 		}, Eq(true)),
 		_)
 	).InSequence(seq)
-	//.WillOnce(Invoke(ReturnImmediate([=](auto in __unused, auto& out) {
-		//// give the other thread time to get 
-		//nap();
-		//SET_OUT_HEADER_LEN(out, attr);
-		//out.body.attr.attr.ino = ino;
-		//out.body.attr.attr.mode = S_IFREG | 0644;
-		//out.body.attr.attr_valid = UINT64_MAX;
-		//out1->body.attr.attr.size = newsize;	// Changed size
 	.WillOnce(Invoke([&](auto in, auto &out __unused) {
-		// FUSE_SETATTR changes the file size, but in order to simulate
-		// a race, don't reply.  Instead, just save the unique for
-		// later.
+		/*
+		 * FUSE_SETATTR changes the file size, but in order to simulate
+		 * a race, don't reply.  Instead, just save the unique for
+		 * later.
+		 */
 		setattr_unique = in.header.unique;
+		/* Allow the lookup thread to proceed */
+		sem_post(&sem);
 	}));
 	EXPECT_LOOKUP(FUSE_ROOT_ID, RELPATH)
 	.InSequence(seq)
 	.WillOnce(Invoke([&](auto in __unused, auto& out) {
-		// First complete the lookup request, returning the old size
+		/* First complete the lookup request, returning the old size */
 		std::unique_ptr<mockfs_buf_out> out0(new mockfs_buf_out);
 		out0->header.unique = in.header.unique;
 		SET_OUT_HEADER_LEN(*out0, entry);
@@ -385,7 +384,7 @@ TEST_F(Lookup, lookup_during_setattr)
 		out0->body.entry.attr.size = oldsize;
 		out.push_back(std::move(out0));
 
-		// Then, respond to the setattr request
+		/* Then, respond to the setattr request */
 		std::unique_ptr<mockfs_buf_out> out1(new mockfs_buf_out);
 		out1->header.unique = setattr_unique;
 		SET_OUT_HEADER_LEN(*out1, attr);
@@ -396,22 +395,18 @@ TEST_F(Lookup, lookup_during_setattr)
 		out.push_back(std::move(out1));
 	}));
 
-	// Insert the file into the name cache
-	//ASSERT_EQ(0, access(FULLPATH, F_OK)) << strerror(errno);
-
-	// Start the setattr thread
+	/* Start the setattr thread */
 	ASSERT_EQ(0, pthread_create(&th0, NULL, setattr0, NULL))
 		<< strerror(errno);
 
-	// Let the attr cache expire
-	nap();
+	/* Wait for FUSE_SETATTR to be sent */
+	sem_wait(&sem);
 
-	// Lookup again, which will race with setattr
+	/* Lookup again, which will race with setattr */
 	ASSERT_EQ(0, stat(FULLPATH, &sb)) << strerror(errno);
-
 	ASSERT_EQ((off_t)newsize, sb.st_size);
 
-	// truncate should've completed without error
+	/* truncate should've completed without error */
 	pthread_join(th0, &thr0_value);
 	EXPECT_EQ(0, (intptr_t)thr0_value);
 }
