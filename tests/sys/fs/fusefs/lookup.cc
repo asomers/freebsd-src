@@ -345,7 +345,7 @@ TEST_F(Lookup, lookup_during_setattr)
 		out.body.entry.nodeid = ino;
 		out.body.entry.attr.size = oldsize;
 		out.body.entry.nodeid = ino;
-		out.body.entry.entry_valid_nsec = NAP_NS / 2;
+		//out.body.entry.entry_valid_nsec = NAP_NS / 2;
 		out.body.entry.attr_valid_nsec = NAP_NS / 2;
 		out.body.entry.attr.ino = ino;
 		out.body.entry.attr.mode = S_IFREG | 0644;
@@ -357,12 +357,18 @@ TEST_F(Lookup, lookup_during_setattr)
 		}, Eq(true)),
 		_)
 	).InSequence(seq)
+	//.WillOnce(Invoke(ReturnImmediate([=](auto in __unused, auto& out) {
+		//// give the other thread time to get 
+		//nap();
+		//SET_OUT_HEADER_LEN(out, attr);
+		//out.body.attr.attr.ino = ino;
+		//out.body.attr.attr.mode = S_IFREG | 0644;
+		//out.body.attr.attr_valid = UINT64_MAX;
+		//out1->body.attr.attr.size = newsize;	// Changed size
 	.WillOnce(Invoke([&](auto in, auto &out __unused) {
-		/*
-		 * FUSE_SETATTR changes the file size, but in order to simulate
-		 * a race, don't reply.  Instead, just save the unique for
-		 * later.
-		 */
+		// FUSE_SETATTR changes the file size, but in order to simulate
+		// a race, don't reply.  Instead, just save the unique for
+		// later.
 		setattr_unique = in.header.unique;
 	}));
 	EXPECT_LOOKUP(FUSE_ROOT_ID, RELPATH)
@@ -391,7 +397,7 @@ TEST_F(Lookup, lookup_during_setattr)
 	}));
 
 	// Insert the file into the name cache
-	ASSERT_EQ(0, access(FULLPATH, F_OK)) << strerror(errno);
+	//ASSERT_EQ(0, access(FULLPATH, F_OK)) << strerror(errno);
 
 	// Start the setattr thread
 	ASSERT_EQ(0, pthread_create(&th0, NULL, setattr0, NULL))
