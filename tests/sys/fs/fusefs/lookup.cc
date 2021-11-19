@@ -309,12 +309,11 @@ static void* setattr0(void* arg __unused) {
 }
 
 /*
- * VOP_LOOKUP should discard attributes returned by the server if the were
+ * VOP_LOOKUP should discard attributes returned by the server if they were
  * modified by VOP_SETATTR while the VOP_LOOKUP was in progress.
  *
  * Sequence of operations:
- * * Thread 1 calls ftruncate, which acquires the vnode lock exclusively
- * * The attribute cache expires.
+ * * Thread 1 calls truncate, which acquires the vnode lock exclusively
  * * Thread 2 calls stat, which does VOP_LOOKUP, which sends FUSE_LOOKUP to the
  *   server.  The server replies with the old file length.  Thread 2 blocks
  *   waiting for the vnode lock.
