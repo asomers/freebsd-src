@@ -1382,15 +1382,15 @@ fuse_vnop_lookup(struct vop_lookup_args *ap)
 			fvdat = VTOFUD(vp);
 
 			MPASS(feo != NULL);
-			if (timespeccmp(&now, &fvdat->last_local_modify, >=)) {
+			/*if (timespeccmp(&now, &fvdat->last_local_modify, >=)) {*/
 				/*
 				 * Attributes from the server are definitely
 				 * newer than the last attributes we sent to
 				 * the server, so cache them.
 				 */
-				fuse_internal_cache_attrs(*vpp, &feo->attr,
-					feo->attr_valid, feo->attr_valid_nsec, NULL, true);
-			}
+				/*fuse_internal_cache_attrs(*vpp, &feo->attr,*/
+					/*feo->attr_valid, feo->attr_valid_nsec, NULL, true);*/
+			/*}*/
 			fuse_validity_2_bintime(feo->entry_valid,
 				feo->entry_valid_nsec,
 				&fvdat->entry_cache_timeout);
