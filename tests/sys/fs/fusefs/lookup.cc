@@ -324,6 +324,7 @@ static void* setattr0(void* arg __unused) {
  *
  * Regression test for https://bugs.freebsd.org/bugzilla/show_bug.cgi?id=259071
  */
+// TODO: test VOP_LOOKUP/VOP_WRITE and VOP_LOOKUP/VOP_COPY_FILE_RANGE race
 TEST_F(Lookup, lookup_during_setattr)
 {
 	const char FULLPATH[] = "mountpoint/some_file.txt";

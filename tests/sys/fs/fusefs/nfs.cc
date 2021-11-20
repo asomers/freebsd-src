@@ -215,9 +215,11 @@ TEST_F(Fhstat, cache_expired)
 	EXPECT_EQ(ino, sb.st_ino);
 }
 
-static void* setattr0(void* arg __unused) {
+static void* setattr0(void* arg) {
 	ssize_t r;
+	sem_t *sem = (sem_t*) arg;
 
+	sem_wait(sem);
 	r = truncate("mountpoint/some_file.txt", 5);
 	if (r >= 0)
 		return 0;
@@ -230,14 +232,15 @@ static void* setattr0(void* arg __unused) {
  * modified by VOP_SETATTR while the VFS_VGET was in progress.
  *
  * Sequence of operations:
- * * Thread 1 calls ftruncate, which acquires the vnode lock exclusively
- * * Thread 2 calls fhstat, which does VFS_VGET, which sends FUSE_LOOKUP to the
- *   server.  The server replies with the old file length.  Thread 2 blocks
+ * * Thread 1 calls fhstat, entering VFS_VGET, and issues FUSE_LOOKUP
+ * * Thread 2 calls truncate, which acquires the vnode lock exclusively and
+ *   issues FUSE_SETATTR.
+ * * Thread 1's FUSE_LOOKUP returns with the old size, but the thread blocks
  *   waiting for the vnode lock.
- * * Thread 1 does FUSE_SETATTR to change the file's size and updates the
- *   attribute cache.  Then it releases the vnode lock.
- * * Thread 2 acquires the vnode lock.  At this point it must not add the
- *   now-stale file size to the attribute cache.
+ * * Thread 2's FUSE_SETATTR returns, and that thread sets the file's new size
+ *   in the attribute cache.  Finally it releases the vnode lock.
+ * * The vnode lock acquired, thread 1 must not overwrite the attr cache's size
+ *   with the old value.
  *
  * Regression test for https://bugs.freebsd.org/bugzilla/show_bug.cgi?id=259071
  */
@@ -247,7 +250,7 @@ TEST_F(Fhstat, fhstat_during_setattr)
 	const char RELPATH[] = "some_file.txt";
 	Sequence seq;
 	uint64_t ino = 3;
-	uint64_t setattr_unique;
+	uint64_t lookup_unique;
 	const uint64_t oldsize = 10;
 	const uint64_t newsize = 5;
 	pthread_t th0;
@@ -259,9 +262,32 @@ TEST_F(Fhstat, fhstat_during_setattr)
 	ASSERT_EQ(0, sem_init(&sem, 0, 0)) << strerror(errno);
 
 	EXPECT_LOOKUP(FUSE_ROOT_ID, RELPATH)
-	.Times(2)
+	.Times(1)
 	.InSequence(seq)
-	.WillRepeatedly(Invoke(ReturnImmediate([=](auto in __unused, auto& out) {
+	.WillRepeatedly(Invoke(ReturnImmediate([=](auto in __unused, auto& out)
+	{
+		/* Called by getfh, caches attributes but not entries */
+		SET_OUT_HEADER_LEN(out, entry);
+		out.body.entry.nodeid = ino;
+		out.body.entry.attr.size = oldsize;
+		out.body.entry.nodeid = ino;
+		out.body.entry.attr_valid_nsec = NAP_NS / 2;
+		out.body.entry.attr.ino = ino;
+		out.body.entry.attr.mode = S_IFREG | 0644;
+	})));
+	EXPECT_LOOKUP(ino, ".")
+	.InSequence(seq)
+	.WillOnce(Invoke([&](auto in, auto &out __unused) {
+		/* Called by fhstat.  Block to simulate a race */
+		lookup_unique = in.header.unique;
+		sem_post(&sem);
+	}));
+
+	EXPECT_LOOKUP(FUSE_ROOT_ID, RELPATH)
+	.Times(1)
+	.InSequence(seq)
+	.WillRepeatedly(Invoke(ReturnImmediate([=](auto in __unused, auto& out)
+	{
 		/* Called by VOP_SETATTR, caches attributes but not entries */
 		SET_OUT_HEADER_LEN(out, entry);
 		out.body.entry.nodeid = ino;
@@ -271,6 +297,7 @@ TEST_F(Fhstat, fhstat_during_setattr)
 		out.body.entry.attr.ino = ino;
 		out.body.entry.attr.mode = S_IFREG | 0644;
 	})));
+
 	EXPECT_CALL(*m_mock, process(
 		ResultOf([=](auto in) {
 			return (in.header.opcode == FUSE_SETATTR &&
@@ -278,22 +305,10 @@ TEST_F(Fhstat, fhstat_during_setattr)
 		}, Eq(true)),
 		_)
 	).InSequence(seq)
-	.WillOnce(Invoke([&](auto in, auto &out __unused) {
-		/*
-		 * FUSE_SETATTR changes the file size, but in order to simulate
-		 * a race, don't reply.  Instead, just save the unique for
-		 * later.
-		 */
-		setattr_unique = in.header.unique;
-		/* Allow the lookup thread to proceed */
-		sem_post(&sem);
-	}));
-	EXPECT_LOOKUP(ino, ".")
-	.InSequence(seq)
 	.WillOnce(Invoke([&](auto in __unused, auto& out) {
 		/* First complete the lookup request, returning the old size */
 		std::unique_ptr<mockfs_buf_out> out0(new mockfs_buf_out);
-		out0->header.unique = in.header.unique;
+		out0->header.unique = lookup_unique;
 		SET_OUT_HEADER_LEN(*out0, entry);
 		out0->body.entry.attr.mode = S_IFREG | 0644;
 		out0->body.entry.nodeid = ino;
@@ -304,7 +319,7 @@ TEST_F(Fhstat, fhstat_during_setattr)
 
 		/* Then, respond to the setattr request */
 		std::unique_ptr<mockfs_buf_out> out1(new mockfs_buf_out);
-		out1->header.unique = setattr_unique;
+		out1->header.unique = in.header.unique;
 		SET_OUT_HEADER_LEN(*out1, attr);
 		out1->body.attr.attr.ino = ino;
 		out1->body.attr.attr.mode = S_IFREG | 0644;
@@ -317,11 +332,8 @@ TEST_F(Fhstat, fhstat_during_setattr)
 	ASSERT_EQ(0, getfh(FULLPATH, &fhp)) << strerror(errno);
 
 	/* Start the setattr thread */
-	ASSERT_EQ(0, pthread_create(&th0, NULL, setattr0, NULL))
+	ASSERT_EQ(0, pthread_create(&th0, NULL, setattr0, (void*)&sem))
 		<< strerror(errno);
-
-	/* Wait for FUSE_SETATTR to be sent */
-	sem_wait(&sem);
 
 	/* Lookup again, which will race with setattr */
 	ASSERT_EQ(0, fhstat(&fhp, &sb)) << strerror(errno);

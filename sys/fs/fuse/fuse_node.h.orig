@@ -68,7 +68,6 @@
 #include <sys/fnv_hash.h>
 #include <sys/types.h>
 #include <sys/mutex.h>
-#include <sys/buf.h>
 
 #include "fuse_file.h"
 
@@ -116,15 +115,9 @@ struct fuse_vnode_data {
 	 * by nodeid instead of pathname.
 	 */
 	struct bintime	entry_cache_timeout;
-	/*
-	 * Monotonic time of the last FUSE_SETATTR operation.  Used to avoid
-	 * races between FUSE_SETATTR and FUSE_LOOKUP
-	 */
-	struct timespec	last_local_modify;
 	struct vattr	cached_attrs;
 	uint64_t	nlookup;
 	enum vtype	vtype;
-	struct vn_clusterw clusterw;
 };
 
 /*
@@ -206,7 +199,7 @@ void fuse_vnode_open(struct vnode *vp, int32_t fuse_open_flags,
 
 int fuse_vnode_savesize(struct vnode *vp, struct ucred *cred, pid_t pid);
 
-int fuse_vnode_setsize(struct vnode *vp, off_t newsize, bool from_server);
+int fuse_vnode_setsize(struct vnode *vp, off_t newsize);
 
 void fuse_vnode_undirty_cached_timestamps(struct vnode *vp);
 
