@@ -1189,6 +1189,8 @@ fuse_lookup_alloc(struct mount *mp, void *arg, int lkflags, struct vnode **vpp)
 
 SDT_PROBE_DEFINE3(fusefs, , vnops, cache_lookup,
 	"int", "struct timespec*", "struct timespec*");
+SDT_PROBE_DEFINE4(fusefs, , vnops, lookup_cache_attrs,
+	"struct timespec*", "struct timespec*", "uint64_t", "uint64_t");
 /*
     struct vnop_lookup_args {
 	struct vnodeop_desc *a_desc;
@@ -1287,6 +1289,7 @@ fuse_vnop_lookup(struct vop_lookup_args *ap)
 			break;
 
 		case ENOENT:		/* negative match */
+			// TODO: delete this getnanouptime
 			getnanouptime(&now);
 			if (timespeccmp(&timeout, &now, <=)) {
 				/* Cache timeout */
@@ -1382,15 +1385,19 @@ fuse_vnop_lookup(struct vop_lookup_args *ap)
 			fvdat = VTOFUD(vp);
 
 			MPASS(feo != NULL);
-			/*if (timespeccmp(&now, &fvdat->last_local_modify, >=)) {*/
+			SDT_PROBE4(fusefs, , vnops, lookup_cache_attrs, &now,
+					&fvdat->last_local_modify,
+					feo->attr.size,
+					fvdat->cached_attrs.va_size);
+			if (timespeccmp(&now, &fvdat->last_local_modify, >)) {
 				/*
 				 * Attributes from the server are definitely
 				 * newer than the last attributes we sent to
 				 * the server, so cache them.
 				 */
-				/*fuse_internal_cache_attrs(*vpp, &feo->attr,*/
-					/*feo->attr_valid, feo->attr_valid_nsec, NULL, true);*/
-			/*}*/
+				fuse_internal_cache_attrs(*vpp, &feo->attr,
+					feo->attr_valid, feo->attr_valid_nsec, NULL, true);
+			}
 			fuse_validity_2_bintime(feo->entry_valid,
 				feo->entry_valid_nsec,
 				&fvdat->entry_cache_timeout);

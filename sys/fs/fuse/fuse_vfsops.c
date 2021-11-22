@@ -580,7 +580,7 @@ fuse_vfsop_vget(struct mount *mp, ino_t ino, int flags, struct vnode **vpp)
 		goto out;
 	fvdat = VTOFUD(*vpp);
 
-	if (timespeccmp(&now, &fvdat->last_local_modify, >=)) {
+	if (timespeccmp(&now, &fvdat->last_local_modify, >)) {
 		/*
 		 * Attributes from the server are definitely newer than the
 		 * last attributes we sent to the server, so cache them.

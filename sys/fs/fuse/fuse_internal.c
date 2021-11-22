@@ -107,6 +107,7 @@ SDT_PROVIDER_DECLARE(fusefs);
  * arg1: Textual message
  */
 SDT_PROBE_DEFINE2(fusefs, , internal, trace, "int", "char*");
+SDT_PROBE_DEFINE2(fusefs, , internal, setattr, "struct timespec*", "uint64_t");
 
 #ifdef ZERO_PAD_INCOMPLETE_BUFS
 static int isbzero(void *buf, size_t len);
@@ -1166,6 +1167,8 @@ int fuse_internal_setattr(struct vnode *vp, struct vattr *vap,
 	int sizechanged = -1;
 	uint64_t newsize = 0;
 
+	ASSERT_VOP_ELOCKED(vp, __func__);
+
 	mp = vnode_mount(vp);
 	fvdat = VTOFUD(vp);
 	data = fuse_get_mpdata(mp);
@@ -1262,6 +1265,9 @@ int fuse_internal_setattr(struct vnode *vp, struct vattr *vap,
 		fuse_internal_cache_attrs(vp, &fao->attr, fao->attr_valid,
 			fao->attr_valid_nsec, NULL, false);
 		getnanouptime(&fvdat->last_local_modify);
+		SDT_PROBE2(fusefs, , internal, setattr,
+				&fvdat->last_local_modify,
+				fvdat->cached_attrs.va_size);
 	}
 
 out:

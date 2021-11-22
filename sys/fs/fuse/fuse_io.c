@@ -118,6 +118,7 @@ SDT_PROVIDER_DECLARE(fusefs);
  * arg1: Textual message
  */
 SDT_PROBE_DEFINE2(fusefs, , io, trace, "int", "char*");
+SDT_PROBE_DEFINE2(fusefs, , io, last_local_modify, "struct timespec*", "uint64_t");
 
 static int
 fuse_inval_buf_range(struct vnode *vp, off_t filesize, off_t start, off_t end);
@@ -573,6 +574,9 @@ retry:
 		if (as_written_offset - diff > filesize) {
 			fuse_vnode_setsize(vp, as_written_offset, false);
 			getnanouptime(&fvdat->last_local_modify);
+			SDT_PROBE2(fusefs, , io, last_local_modify,
+					&fvdat->last_local_modify,
+					fvdat->cached_attrs.va_size);
 		}
 		if (as_written_offset - diff >= filesize)
 			fvdat->flag &= ~FN_SIZECHANGE;
@@ -720,6 +724,9 @@ again:
 			err = fuse_vnode_setsize(vp, uio->uio_offset + n, false);
 			filesize = uio->uio_offset + n;
 			getnanouptime(&fvdat->last_local_modify);
+			SDT_PROBE2(fusefs, , io, last_local_modify,
+					&fvdat->last_local_modify,
+					fvdat->cached_attrs.va_size);
 			fvdat->flag |= FN_SIZECHANGE;
 			if (err) {
 				brelse(bp);
