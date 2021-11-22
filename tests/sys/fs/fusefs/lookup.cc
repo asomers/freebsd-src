@@ -31,6 +31,10 @@
  */
 
 extern "C" {
+#include <sys/types.h>
+#include <sys/sysctl.h>
+
+#include <fcntl.h>
 #include <pthread.h>
 #include <semaphore.h>
 #include <unistd.h>
@@ -49,6 +53,8 @@ virtual void SetUp() {
 	Lookup::SetUp();
 }
 };
+
+const char reclaim_mib[] = "debug.try_reclaim_vnode";
 
 /*
  * If lookup returns a non-zero cache timeout, then subsequent VOP_GETATTRs
@@ -182,6 +188,72 @@ TEST_F(Lookup, dotdot)
 	 */
 	ASSERT_EQ(0, access(FULLPATH, F_OK)) << strerror(errno);
 }
+
+#if 0
+TEST_F(Lookup, top_dotdot)
+{
+	//const char MOUNTPOINT[] = "mountpoint";
+	//const char RELDIRPATH[] = "..";
+	const char FULLPATH[] = "mountpoint/some_dir";
+	const char DOTDOTPATH[] = "..";
+	//char buf[80];
+	int err;
+
+	EXPECT_CALL(*m_mock, process(
+		ResultOf([=](auto in) {
+			return (in.header.opcode == FUSE_OPENDIR &&
+				in.header.nodeid == 1);
+		}, Eq(true)),
+		_)
+	).WillOnce(Invoke(ReturnImmediate([=](auto in __unused, auto& out) {
+		SET_OUT_HEADER_LEN(out, open);
+	})));
+	//EXPECT_LOOKUP(FUSE_ROOT_ID, RELDIRPATH)
+	//.WillOnce(Invoke(ReturnImmediate([=](auto in __unused, auto& out) {
+		//SET_OUT_HEADER_LEN(out, entry);
+		//out.body.entry.attr.mode = S_IFDIR | 0755;
+		//out.body.entry.nodeid = 1;
+	//})));
+	EXPECT_LOOKUP(FUSE_ROOT_ID, "some_dir")
+	.WillOnce(Invoke(ReturnImmediate([=](auto in __unused, auto& out) {
+		SET_OUT_HEADER_LEN(out, entry);
+		out.body.entry.attr.mode = S_IFDIR | 0755;
+		out.body.entry.nodeid = 2;
+		out.body.entry.entry_valid_nsec = NAP_NS / 2;
+		out.body.entry.attr_valid_nsec = NAP_NS / 2;
+	})));
+	EXPECT_LOOKUP(2, "mountpoint")
+	.WillOnce(Invoke(ReturnErrno(ENOENT)));
+	expect_forget(1, 1, NULL);
+	EXPECT_CALL(*m_mock, process(
+		ResultOf([](auto in) {
+			return (in.header.opcode == FUSE_GETATTR &&
+				in.header.nodeid == 2);
+		}, Eq(true)),
+		_)
+	).WillOnce(Invoke(ReturnImmediate([](auto i __unused, auto& out) {
+		SET_OUT_HEADER_LEN(out, attr);
+		out.body.attr.attr_valid = UINT64_MAX;
+		out.body.attr.attr.ino = 2;	// Must match nodeid
+		out.body.attr.attr.mode = S_IFREG | 0644;
+	})));
+
+	//int fd = open(MOUNTPOINT, O_RDONLY);
+	//ASSERT_GE(fd, 0);
+	ASSERT_EQ(0, chdir(FULLPATH));
+	nap();
+	err = sysctlbyname(reclaim_mib, NULL, 0, DOTDOTPATH, sizeof(DOTDOTPATH));
+	ASSERT_EQ(0, err) << strerror(errno);
+	//ASSERT_EQ(0, faccessat(fd, "..", F_OK, 0));
+	//ASSERT_EQ(buf, getcwd(buf, sizeof(buf)));
+	/*
+	 * access(2) is one of the few syscalls that will not (always) follow
+	 * up a successful VOP_LOOKUP with another VOP.
+	 */
+	ASSERT_EQ(0, access("..", F_OK)) << strerror(errno);
+	ASSERT_EQ(0, access("../..", F_OK)) << strerror(errno);
+}
+#endif
 
 TEST_F(Lookup, enoent)
 {
