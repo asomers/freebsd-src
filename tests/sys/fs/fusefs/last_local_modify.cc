@@ -32,6 +32,7 @@ extern "C" {
 #include <sys/mount.h>
 #include <sys/stat.h>
 
+#include <fcntl.h>
 #include <pthread.h>
 #include <semaphore.h>
 }
@@ -89,16 +90,11 @@ virtual void SetUp() {
 };
 
 //class LastLocalModify: public FuseTest {
-class LastLocalModify: public FuseTest, public WithParamInterface<tuple<Reader, Writer>> {
+class LastLocalModify: public FuseTest, public WithParamInterface<Writer> {
 //{};
 public:
 virtual void SetUp() {
 	m_init_flags = FUSE_EXPORT_SUPPORT;
-	tuple<Reader, Writer> params;
-
-	params = GetParam();
-	if (get<0>(params) == VFS_VGET && geteuid() != 0)
-                GTEST_SKIP() << "This test requires a privileged user";
 
 	FuseTest::SetUp();
 }
@@ -108,7 +104,8 @@ static void* setattr0(void* arg) {
 	ssize_t r;
 	sem_t *sem = (sem_t*) arg;
 
-	sem_wait(sem);
+	if (sem)
+		sem_wait(sem);
 	r = truncate("mountpoint/some_file.txt", 5);
 	if (r >= 0)
 		return 0;
@@ -116,8 +113,129 @@ static void* setattr0(void* arg) {
 		return (void*)(intptr_t)errno;
 }
 
-TEST_P(LastLocalModify, last_local_modify)
-//TEST_F(Exportable, fhstat_during_setattr)
+static void* write0(void* arg) {
+	ssize_t r;
+	int fd;
+	sem_t *sem = (sem_t*) arg;
+	const char BUF[] = "abcdefghijklmn";
+
+	if (sem)
+		sem_wait(sem);
+	fd = open("mountpoint/some_file.txt", O_RDWR);
+	if (fd < 0)
+		return (void*)(intptr_t)errno;
+
+	r = write(fd, BUF, sizeof(BUF));
+	if (r >= 0) {
+		LastLocalModify::leak(fd);
+		return 0;
+	} else
+		return (void*)(intptr_t)errno;
+}
+
+/*
+ * VOP_LOOKUP should discard attributes returned by the server if they were
+ * modified by another VOP while the VOP_LOOKUP was in progress.
+ *
+ * Sequence of operations:
+ * * Thread 1 calls truncate, which acquires the vnode lock exclusively
+ * * Thread 2 calls stat, which does VOP_LOOKUP, which sends FUSE_LOOKUP to the
+ *   server.  The server replies with the old file length.  Thread 2 blocks
+ *   waiting for the vnode lock.
+ * * Thread 1 does FUSE_SETATTR to change the file's size and updates the
+ *   attribute cache.  Then it releases the vnode lock.
+ * * Thread 2 acquires the vnode lock.  At this point it must not add the
+ *   now-stale file size to the attribute cache.
+ *
+ * Regression test for https://bugs.freebsd.org/bugzilla/show_bug.cgi?id=259071
+ */
+TEST_P(LastLocalModify, lookup)
+{
+	const char FULLPATH[] = "mountpoint/some_file.txt";
+	const char RELPATH[] = "some_file.txt";
+	Sequence seq;
+	uint64_t ino = 3;
+	uint64_t setattr_unique;
+	const uint64_t oldsize = 10;
+	const uint64_t newsize = 5;
+	pthread_t th0;
+	void *thr0_value;
+	struct stat sb;
+	static sem_t sem;
+
+	ASSERT_EQ(0, sem_init(&sem, 0, 0)) << strerror(errno);
+
+	EXPECT_LOOKUP(FUSE_ROOT_ID, RELPATH)
+	.InSequence(seq)
+	.WillOnce(Invoke(ReturnImmediate([=](auto in __unused, auto& out) {
+		/* Called by VOP_SETATTR, caches attributes but not entries */
+		SET_OUT_HEADER_LEN(out, entry);
+		out.body.entry.nodeid = ino;
+		out.body.entry.attr.size = oldsize;
+		out.body.entry.nodeid = ino;
+		out.body.entry.attr_valid_nsec = NAP_NS / 2;
+		out.body.entry.attr.ino = ino;
+		out.body.entry.attr.mode = S_IFREG | 0644;
+	})));
+	EXPECT_CALL(*m_mock, process(
+		ResultOf([=](auto in) {
+			return (in.header.opcode == FUSE_SETATTR &&
+				in.header.nodeid == ino);
+		}, Eq(true)),
+		_)
+	).InSequence(seq)
+	.WillOnce(Invoke([&](auto in, auto &out __unused) {
+		/*
+		 * FUSE_SETATTR changes the file size, but in order to simulate
+		 * a race, don't reply.  Instead, just save the unique for
+		 * later.
+		 */
+		setattr_unique = in.header.unique;
+		/* Allow the lookup thread to proceed */
+		sem_post(&sem);
+	}));
+	EXPECT_LOOKUP(FUSE_ROOT_ID, RELPATH)
+	.InSequence(seq)
+	.WillOnce(Invoke([&](auto in __unused, auto& out) {
+		/* First complete the lookup request, returning the old size */
+		std::unique_ptr<mockfs_buf_out> out0(new mockfs_buf_out);
+		out0->header.unique = in.header.unique;
+		SET_OUT_HEADER_LEN(*out0, entry);
+		out0->body.entry.attr.mode = S_IFREG | 0644;
+		out0->body.entry.nodeid = ino;
+		out0->body.entry.entry_valid = UINT64_MAX;
+		out0->body.entry.attr_valid = UINT64_MAX;
+		out0->body.entry.attr.size = oldsize;
+		out.push_back(std::move(out0));
+
+		/* Then, respond to the setattr request */
+		std::unique_ptr<mockfs_buf_out> out1(new mockfs_buf_out);
+		out1->header.unique = setattr_unique;
+		SET_OUT_HEADER_LEN(*out1, attr);
+		out1->body.attr.attr.ino = ino;
+		out1->body.attr.attr.mode = S_IFREG | 0644;
+		out1->body.attr.attr.size = newsize;	// Changed size
+		out1->body.attr.attr_valid = UINT64_MAX;
+		out.push_back(std::move(out1));
+	}));
+
+	/* Start the setattr thread */
+	ASSERT_EQ(0, pthread_create(&th0, NULL, setattr0, NULL))
+		<< strerror(errno);
+
+	/* Wait for FUSE_SETATTR to be sent */
+	sem_wait(&sem);
+
+	/* Lookup again, which will race with setattr */
+	ASSERT_EQ(0, stat(FULLPATH, &sb)) << strerror(errno);
+	ASSERT_EQ((off_t)newsize, sb.st_size);
+
+	/* truncate should've completed without error */
+	pthread_join(th0, &thr0_value);
+	EXPECT_EQ(0, (intptr_t)thr0_value);
+}
+
+TEST_P(LastLocalModify, vfs_vget)
 {
 	const char FULLPATH[] = "mountpoint/some_file.txt";
 	const char RELPATH[] = "some_file.txt";
@@ -131,17 +249,21 @@ TEST_P(LastLocalModify, last_local_modify)
 	struct stat sb;
 	static sem_t sem;
 	fhandle_t fhp;
-	tuple<Reader, Writer> params;
+	Writer writer;
 	uint32_t mutator_op;
 
-	params = GetParam();
-	printf("reader=%d writer=%d\n", get<0>(params), get<1>(params));
-	switch(get<1>(params)) {
+	if (geteuid() != 0)
+		GTEST_SKIP() << "This test requires a privileged user";
+
+	writer = GetParam();
+	printf("writer=%d\n", writer);
+	switch(writer) {
 	case VOP_SETATTR:
 		mutator_op = FUSE_SETATTR;
 		break;
 	case VOP_WRITE:
 		mutator_op = FUSE_WRITE;
+		expect_open(ino, 0, 1);
 		break;
 	default:
 		// TODO
@@ -150,41 +272,27 @@ TEST_P(LastLocalModify, last_local_modify)
 
 	ASSERT_EQ(0, sem_init(&sem, 0, 0)) << strerror(errno);
 
-	switch(get<0>(params)) {
-	case VOP_LOOKUP:
-		EXPECT_LOOKUP(FUSE_ROOT_ID, RELPATH)
-		.Times(1)
-		.InSequence(seq)
-		.WillOnce(Invoke([&](auto in, auto &out __unused) {
-			/* Called by stat.  Block to simulate a race */
-			lookup_unique = in.header.unique;
-			sem_post(&sem);
-		}));
-		break;
-	case VFS_VGET:
-		EXPECT_LOOKUP(FUSE_ROOT_ID, RELPATH)
-		.Times(1)
-		.InSequence(seq)
-		.WillOnce(Invoke(ReturnImmediate([=](auto in __unused, auto& out)
-		{
-			/* Called by getfh, caches attributes but not entries */
-			SET_OUT_HEADER_LEN(out, entry);
-			out.body.entry.nodeid = ino;
-			out.body.entry.attr.size = oldsize;
-			out.body.entry.nodeid = ino;
-			out.body.entry.attr_valid_nsec = NAP_NS / 2;
-			out.body.entry.attr.ino = ino;
-			out.body.entry.attr.mode = S_IFREG | 0644;
-		})));
-		EXPECT_LOOKUP(ino, ".")
-		.InSequence(seq)
-		.WillOnce(Invoke([&](auto in, auto &out __unused) {
-			/* Called by fhstat.  Block to simulate a race */
-			lookup_unique = in.header.unique;
-			sem_post(&sem);
-		}));
-		break;
-	}
+	EXPECT_LOOKUP(FUSE_ROOT_ID, RELPATH)
+	.Times(1)
+	.InSequence(seq)
+	.WillOnce(Invoke(ReturnImmediate([=](auto in __unused, auto& out)
+	{
+		/* Called by getfh, caches attributes but not entries */
+		SET_OUT_HEADER_LEN(out, entry);
+		out.body.entry.nodeid = ino;
+		out.body.entry.attr.size = oldsize;
+		out.body.entry.nodeid = ino;
+		out.body.entry.attr_valid_nsec = NAP_NS / 2;
+		out.body.entry.attr.ino = ino;
+		out.body.entry.attr.mode = S_IFREG | 0644;
+	})));
+	EXPECT_LOOKUP(ino, ".")
+	.InSequence(seq)
+	.WillOnce(Invoke([&](auto in, auto &out __unused) {
+		/* Called by fhstat.  Block to simulate a race */
+		lookup_unique = in.header.unique;
+		sem_post(&sem);
+	}));
 
 	EXPECT_LOOKUP(FUSE_ROOT_ID, RELPATH)
 	.Times(1)
@@ -222,41 +330,38 @@ TEST_P(LastLocalModify, last_local_modify)
 		out0->body.entry.attr.size = oldsize;
 		out.push_back(std::move(out0));
 
-		switch(get<1>(params)) {
+		/* Then, respond to the mutator request */
+		out1->header.unique = in.header.unique;
+		switch(writer) {
 		case VOP_SETATTR:
-			/* Then, respond to the setattr request */
-			out1->header.unique = in.header.unique;
 			SET_OUT_HEADER_LEN(*out1, attr);
 			out1->body.attr.attr.ino = ino;
 			out1->body.attr.attr.mode = S_IFREG | 0644;
 			out1->body.attr.attr.size = newsize;	// Changed size
 			out1->body.attr.attr_valid = UINT64_MAX;
-			out.push_back(std::move(out1));
 			break;
 		case VOP_WRITE:
-			// TODO
+			SET_OUT_HEADER_LEN(*out1, write);
+			out1->body.write.size = in.body.write.size;
 			break;
 		default:
 			// TODO
 			break;
 		}
+		out.push_back(std::move(out1));
 	}));
 
 	/* First get a file handle */
-	switch(get<0>(params)) {
-	case VOP_LOOKUP:
-		// TODO:
-		//ASSERT_EQ(0, stat(FULLPATH, &sb)) << strerror(errno);
-		break;
-	case VFS_VGET:
-		ASSERT_EQ(0, getfh(FULLPATH, &fhp)) << strerror(errno);
-		break;
-	}
+	ASSERT_EQ(0, getfh(FULLPATH, &fhp)) << strerror(errno);
 
 	/* Start the mutator thread */
-	switch(get<1>(params)) {
+	switch(writer) {
 	case VOP_SETATTR:
 		ASSERT_EQ(0, pthread_create(&th0, NULL, setattr0, (void*)&sem))
+			<< strerror(errno);
+		break;
+	case VOP_WRITE:
+		ASSERT_EQ(0, pthread_create(&th0, NULL, write0,(void*)&sem))
 			<< strerror(errno);
 		break;
 	default:
@@ -265,14 +370,7 @@ TEST_P(LastLocalModify, last_local_modify)
 	}
 
 	/* Lookup again, which will race with setattr */
-	switch(get<0>(params)) {
-	case VOP_LOOKUP:
-		ASSERT_EQ(0, stat(FULLPATH, &sb)) << strerror(errno);
-		break;
-	case VFS_VGET:
-		ASSERT_EQ(0, fhstat(&fhp, &sb)) << strerror(errno);
-		break;
-	}
+	ASSERT_EQ(0, fhstat(&fhp, &sb)) << strerror(errno);
 
 	ASSERT_EQ((off_t)newsize, sb.st_size);
 
@@ -299,8 +397,5 @@ TEST_P(LastLocalModify, last_local_modify)
 
 
 INSTANTIATE_TEST_CASE_P(LLM, LastLocalModify,
-	Combine(
-		Values(VOP_LOOKUP, VFS_VGET),
-		Values(VOP_SETATTR, VOP_WRITE, VOP_COPY_FILE_RANGE)
-	)
+	Values(VOP_SETATTR, VOP_WRITE, VOP_COPY_FILE_RANGE)
 );
