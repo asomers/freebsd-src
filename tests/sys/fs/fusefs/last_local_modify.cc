@@ -90,20 +90,42 @@ virtual void SetUp() {
 }
 };
 
-static void* setattr0(void* arg) {
+static void* copy_file_range_th(void* arg) {
+	ssize_t r;
+	int fd;
+	sem_t *sem = (sem_t*) arg;
+	off_t off_in = 0;
+	off_t off_out = 10;
+	ssize_t len = 5;
+
+	if (sem)
+		sem_wait(sem);
+	fd = open("mountpoint/some_file.txt", O_RDWR);
+	if (fd < 0)
+		return (void*)(intptr_t)errno;
+
+	r = copy_file_range(fd, &off_in, fd, &off_out, len, 0);
+	if (r >= 0) {
+		LastLocalModify::leak(fd);
+		return 0;
+	} else
+		return (void*)(intptr_t)errno;
+}
+
+static void* setattr_th(void* arg) {
 	ssize_t r;
 	sem_t *sem = (sem_t*) arg;
 
 	if (sem)
 		sem_wait(sem);
-	r = truncate("mountpoint/some_file.txt", 5);
+	r = truncate("mountpoint/some_file.txt", 15);
 	if (r >= 0)
 		return 0;
 	else
 		return (void*)(intptr_t)errno;
 }
 
-static void* write0(void* arg) {
+static void* write_th(void* arg) {
 	ssize_t r;
 	int fd;
 	sem_t *sem = (sem_t*) arg;
@@ -147,7 +169,7 @@ TEST_P(LastLocalModify, lookup)
 	uint64_t ino = 3;
 	uint64_t setattr_unique;
 	const uint64_t oldsize = 10;
-	const uint64_t newsize = 5;
+	const uint64_t newsize = 15;
 	pthread_t th0;
 	void *thr0_value;
 	struct stat sb;
@@ -210,7 +232,7 @@ TEST_P(LastLocalModify, lookup)
 	}));
 
 	/* Start the setattr thread */
-	ASSERT_EQ(0, pthread_create(&th0, NULL, setattr0, NULL))
+	ASSERT_EQ(0, pthread_create(&th0, NULL, setattr_th, NULL))
 		<< strerror(errno);
 
 	/* Wait for FUSE_SETATTR to be sent */
@@ -233,7 +255,7 @@ TEST_P(LastLocalModify, vfs_vget)
 	uint64_t ino = 3;
 	uint64_t lookup_unique;
 	const uint64_t oldsize = 10;
-	const uint64_t newsize = 5;
+	const uint64_t newsize = 15;
 	pthread_t th0;
 	void *thr0_value;
 	struct stat sb;
@@ -246,7 +268,6 @@ TEST_P(LastLocalModify, vfs_vget)
 		GTEST_SKIP() << "This test requires a privileged user";
 
 	writer = writer_from_str(GetParam());
-	printf("writer=%d\n", writer);
 	switch(writer) {
 	case VOP_SETATTR:
 		mutator_op = FUSE_SETATTR;
@@ -255,8 +276,9 @@ TEST_P(LastLocalModify, vfs_vget)
 		mutator_op = FUSE_WRITE;
 		expect_open(ino, 0, 1);
 		break;
-	default:
-		// TODO
+	case VOP_COPY_FILE_RANGE:
+		mutator_op = FUSE_COPY_FILE_RANGE;
+		expect_open(ino, 0, 1);
 		break;
 	}
 
@@ -334,8 +356,9 @@ TEST_P(LastLocalModify, vfs_vget)
 			SET_OUT_HEADER_LEN(*out1, write);
 			out1->body.write.size = in.body.write.size;
 			break;
-		default:
-			// TODO
+		case VOP_COPY_FILE_RANGE:
+			SET_OUT_HEADER_LEN(*out1, write);
+			out1->body.write.size = in.body.write.size;
 			break;
 		}
 		out.push_back(std::move(out1));
@@ -347,15 +370,16 @@ TEST_P(LastLocalModify, vfs_vget)
 	/* Start the mutator thread */
 	switch(writer) {
 	case VOP_SETATTR:
-		ASSERT_EQ(0, pthread_create(&th0, NULL, setattr0, (void*)&sem))
-			<< strerror(errno);
+		ASSERT_EQ(0, pthread_create(&th0, NULL, setattr_th,
+			(void*)&sem)) << strerror(errno);
 		break;
 	case VOP_WRITE:
-		ASSERT_EQ(0, pthread_create(&th0, NULL, write0,(void*)&sem))
+		ASSERT_EQ(0, pthread_create(&th0, NULL, write_th, (void*)&sem))
 			<< strerror(errno);
 		break;
-	default:
-		// TODO:
+	case VOP_COPY_FILE_RANGE:
+		ASSERT_EQ(0, pthread_create(&th0, NULL, copy_file_range_th,
+			(void*)&sem)) << strerror(errno);
 		break;
 	}
 
