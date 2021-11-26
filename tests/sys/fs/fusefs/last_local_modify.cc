@@ -61,37 +61,27 @@ using namespace testing;
  * does not attempt to prevent such races.
  */
 
-enum Reader {
-	VOP_LOOKUP,
-	VFS_VGET
-};
-
 enum Writer {
 	VOP_SETATTR,
 	VOP_WRITE,
 	VOP_COPY_FILE_RANGE
 };
 
-class Nfs: public FuseTest {
-public:
-virtual void SetUp() {
-	if (geteuid() != 0)
-                GTEST_SKIP() << "This test requires a privileged user";
-	FuseTest::SetUp();
+/*
+ * Translate a poll method's string representation to the enum value.
+ * Using strings with ::testing::Values gives better output with
+ * --gtest_list_tests
+ */
+enum Writer writer_from_str(const char* s) {
+	if (0 == strcmp("VOP_SETATTR", s))
+		return VOP_SETATTR;
+	else if (0 == strcmp("VOP_WRITE", s))
+		return VOP_WRITE;
+	else
+		return VOP_COPY_FILE_RANGE;
 }
-};
 
-class Exportable: public Nfs {
-public:
-virtual void SetUp() {
-	m_init_flags = FUSE_EXPORT_SUPPORT;
-	Nfs::SetUp();
-}
-};
-
-//class LastLocalModify: public FuseTest {
-class LastLocalModify: public FuseTest, public WithParamInterface<Writer> {
-//{};
+class LastLocalModify: public FuseTest, public WithParamInterface<const char*> {
 public:
 virtual void SetUp() {
 	m_init_flags = FUSE_EXPORT_SUPPORT;
@@ -255,7 +245,7 @@ TEST_P(LastLocalModify, vfs_vget)
 	if (geteuid() != 0)
 		GTEST_SKIP() << "This test requires a privileged user";
 
-	writer = GetParam();
+	writer = writer_from_str(GetParam());
 	printf("writer=%d\n", writer);
 	switch(writer) {
 	case VOP_SETATTR:
@@ -397,5 +387,5 @@ TEST_P(LastLocalModify, vfs_vget)
 
 
 INSTANTIATE_TEST_CASE_P(LLM, LastLocalModify,
-	Values(VOP_SETATTR, VOP_WRITE, VOP_COPY_FILE_RANGE)
+	Values("VOP_SETATTR", "VOP_WRITE", "VOP_COPY_FILE_RANGE")
 );
