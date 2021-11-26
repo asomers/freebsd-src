@@ -61,7 +61,7 @@ using namespace testing;
  * does not attempt to prevent such races.
  */
 
-enum Writer {
+enum Mutator {
 	VOP_SETATTR,
 	VOP_WRITE,
 	VOP_COPY_FILE_RANGE
@@ -72,7 +72,7 @@ enum Writer {
  * Using strings with ::testing::Values gives better output with
  * --gtest_list_tests
  */
-enum Writer writer_from_str(const char* s) {
+enum Mutator writer_from_str(const char* s) {
 	if (0 == strcmp("VOP_SETATTR", s))
 		return VOP_SETATTR;
 	else if (0 == strcmp("VOP_WRITE", s))
@@ -261,14 +261,14 @@ TEST_P(LastLocalModify, vfs_vget)
 	struct stat sb;
 	static sem_t sem;
 	fhandle_t fhp;
-	Writer writer;
+	Mutator mutator;
 	uint32_t mutator_op;
 
 	if (geteuid() != 0)
 		GTEST_SKIP() << "This test requires a privileged user";
 
-	writer = writer_from_str(GetParam());
-	switch(writer) {
+	mutator = writer_from_str(GetParam());
+	switch(mutator) {
 	case VOP_SETATTR:
 		mutator_op = FUSE_SETATTR;
 		break;
@@ -344,7 +344,7 @@ TEST_P(LastLocalModify, vfs_vget)
 
 		/* Then, respond to the mutator request */
 		out1->header.unique = in.header.unique;
-		switch(writer) {
+		switch(mutator) {
 		case VOP_SETATTR:
 			SET_OUT_HEADER_LEN(*out1, attr);
 			out1->body.attr.attr.ino = ino;
@@ -368,7 +368,7 @@ TEST_P(LastLocalModify, vfs_vget)
 	ASSERT_EQ(0, getfh(FULLPATH, &fhp)) << strerror(errno);
 
 	/* Start the mutator thread */
-	switch(writer) {
+	switch(mutator) {
 	case VOP_SETATTR:
 		ASSERT_EQ(0, pthread_create(&th0, NULL, setattr_th,
 			(void*)&sem)) << strerror(errno);
