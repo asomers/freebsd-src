@@ -734,6 +734,7 @@ fuse_vnop_copy_file_range(struct vop_copy_file_range_args *ap)
 		fuse_internal_clear_suid_on_write(outvp, outcred, td);
 		if (*ap->a_outoffp > outfvdat->cached_attrs.va_size)
 			fuse_vnode_setsize(outvp, *ap->a_outoffp, false);
+		fuse_vnode_update(vp, FN_MTIMECHANGE | FN_CTIMECHANGE);
 	}
 	fdisp_destroy(&fdi);
 
