@@ -11,3 +11,6 @@ members = [
 ]
 resolver = "2"
 
+[workspace.metadata.vendor-filter]
+platforms = ["*-unknown-freebsd"]
+all-features = true
