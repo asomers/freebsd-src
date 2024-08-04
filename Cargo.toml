@@ -1,0 +1,4 @@
+[workspace]
+members = ["tools/regression/fsx"]
+resolver = "2"
+
