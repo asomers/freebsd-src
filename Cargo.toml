@@ -1,4 +1,4 @@
 [workspace]
-members = ["cddl/usr.bin/ztop", "tools/regression/fsx"]
+members = ["cddl/usr.bin/ztop", "tools/regression/fsx", "usr.bin/nfs-exporter"]
 resolver = "2"
 
