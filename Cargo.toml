@@ -4,7 +4,8 @@ members = [
 	"lib/freebsd-libgeom",
 	"lib/freebsd-libgeom-sys",
 	"tools/regression/fsx",
-	"usr.bin/nfs-exporter"
+	"usr.bin/nfs-exporter",
+	"usr.sbin/gstat"
 ]
 resolver = "2"
 
