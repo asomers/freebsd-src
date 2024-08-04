@@ -1,6 +1,7 @@
 [workspace]
 members = [
 	"cddl/usr.bin/ztop",
+	"lib/freebsd-libgeom",
 	"lib/freebsd-libgeom-sys",
 	"tools/regression/fsx",
 	"usr.bin/nfs-exporter"
