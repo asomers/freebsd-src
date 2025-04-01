@@ -1429,6 +1429,7 @@ dbuf_handle_indirect_hole(dmu_buf_impl_t *db, dnode_t *dn, blkptr_t *dbbp)
 	uint32_t indbs = 1ULL << dn->dn_indblkshift;
 	int n_bps = indbs >> SPA_BLKPTRSHIFT;
 
+	ASSERT(MUTEX_HELD(&db->db_mtx));
 	for (int i = 0; i < n_bps; i++) {
 		blkptr_t *bp = &bps[i];
 
@@ -2485,6 +2486,7 @@ dbuf_undirty_bonus(dbuf_dirty_record_t *dr)
 {
 	dmu_buf_impl_t *db = dr->dr_dbuf;
 
+	ASSERT(MUTEX_HELD(&db->db_mtx));
 	if (dr->dt.dl.dr_data != db->db.db_data) {
 		struct dnode *dn = dr->dr_dnode;
 		int max_bonuslen = DN_SLOTS_TO_BONUSLEN(dn->dn_num_slots);
@@ -3016,6 +3018,7 @@ dbuf_destroy(dmu_buf_impl_t *db)
 		int bonuslen = DN_SLOTS_TO_BONUSLEN(slots);
 		if (db->db.db_data != NULL) {
 			kmem_free(db->db.db_data, bonuslen);
+			/* TODO: NULL db->db.db_data */
 			arc_space_return(bonuslen, ARC_SPACE_BONUS);
 			db->db_state = DB_UNCACHED;
 			DTRACE_SET_STATE(db, "buffer cleared");
@@ -3190,6 +3193,9 @@ dbuf_findbp(dnode_t *dn, int level, uint64_t blkid, int fail_sparse,
 			*parentp = NULL;
 			return (err);
 		}
+		/* XXX db_mtx isn't held, but should be! */
+		/*ASSERT(MUTEX_HELD(&(*parentp)->db_mtx));*/
+		/* TODO: don't take lock if assertions are off */
 		rw_enter(&(*parentp)->db_rwlock, RW_READER);
 		*bpp = ((blkptr_t *)(*parentp)->db.db_data) +
 		    (blkid & ((1ULL << epbs) - 1));
@@ -3687,6 +3693,7 @@ dbuf_hold_copy(dnode_t *dn, dmu_buf_impl_t *db)
 		    DBUF_GET_BUFC_TYPE(db), db->db.db_size));
 	}
 
+	ASSERT(MUTEX_HELD(&db->db_mtx));
 	rw_enter(&db->db_rwlock, RW_WRITER);
 	memcpy(db->db.db_data, data->b_data, arc_buf_size(data));
 	rw_exit(&db->db_rwlock);
@@ -3750,6 +3757,7 @@ dbuf_hold_impl(dnode_t *dn, uint8_t level, uint64_t blkid,
 
 	if (db->db_buf != NULL) {
 		arc_buf_access(db->db_buf);
+		ASSERT(MUTEX_HELD(&db->db_mtx));
 		ASSERT3P(db->db.db_data, ==, db->db_buf->b_data);
 	}
 
@@ -4330,6 +4338,8 @@ dbuf_lightweight_bp(dbuf_dirty_record_t *dr)
 		return (&dn->dn_phys->dn_blkptr[dr->dt.dll.dr_blkid]);
 	} else {
 		dmu_buf_impl_t *parent_db = dr->dr_parent->dr_dbuf;
+		/* XXX db_mtx isn't held, but should be! */
+		/*ASSERT(MUTEX_HELD(&parent_db->db_mtx));*/
 		int epbs = dn->dn_indblkshift - SPA_BLKPTRSHIFT;
 		VERIFY3U(parent_db->db_level, ==, 1);
 		VERIFY3P(parent_db->db_dnode_handle->dnh_dnode, ==, dn);
@@ -4760,6 +4770,8 @@ dbuf_write_children_ready(zio_t *zio, arc_buf_t *buf, void *vdb)
 	dn = DB_DNODE(db);
 	epbs = dn->dn_phys->dn_indblkshift - SPA_BLKPTRSHIFT;
 	ASSERT3U(epbs, <, 31);
+	/* XXX db_mtx should be held, but isn't! */
+	/*ASSERT(MUTEX_HELD(&db->db_mtx));*/
 
 	/* Determine if all our children are holes */
 	for (i = 0, bp = db->db.db_data; i < 1ULL << epbs; i++, bp++) {
@@ -4988,6 +5000,8 @@ dbuf_remap(dnode_t *dn, dmu_buf_impl_t *db, dmu_tx_t *tx)
 {
 	spa_t *spa = dmu_objset_spa(db->db_objset);
 	ASSERT(dsl_pool_sync_context(spa_get_dsl(spa)));
+	/* XXX db_mtx isn't held, but should be! */
+	/*ASSERT(MUTEX_HELD(&db->db_mtx));*/
 
 	if (!spa_feature_is_active(spa, SPA_FEATURE_DEVICE_REMOVAL))
 		return;
