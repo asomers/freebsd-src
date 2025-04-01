@@ -436,6 +436,8 @@ dnode_verify(dnode_t *dn)
 		ASSERT3U(dn->dn_phys->dn_nlevels, <=, dn->dn_nlevels);
 	ASSERT(DMU_OBJECT_IS_SPECIAL(dn->dn_object) || dn->dn_dbuf != NULL);
 	if (dn->dn_dbuf != NULL) {
+		/* XXX db_mtx isn't held, but should be ! */
+		/*ASSERT(MUTEX_HELD(&dn->dn_dbuf->db_mtx));*/
 		ASSERT3P(dn->dn_phys, ==,
 		    (dnode_phys_t *)dn->dn_dbuf->db.db_data +
 		    (dn->dn_object % (dn->dn_dbuf->db.db_size >> DNODE_SHIFT)));
@@ -1520,6 +1522,8 @@ dnode_hold_impl(objset_t *os, uint64_t object, int flag, int slots,
 	epb = db->db.db_size >> DNODE_SHIFT;
 
 	idx = object & (epb - 1);
+	/* XXX db_mtx isn't held, but should be! */
+	/*ASSERT(MUTEX_HELD(&db->db_mtx));*/
 	dn_block = (dnode_phys_t *)db->db.db_data;
 
 	ASSERT(DB_DNODE(db)->dn_type == DMU_OT_DNODE);
@@ -2582,6 +2586,8 @@ dnode_next_offset_level(dnode_t *dn, int flags, uint64_t *offset,
 			dbuf_rele(db, FTAG);
 			return (error);
 		}
+		// XXX db_mtx isn't held, but should be!
+		/*ASSERT(MUTEX_HELD(&db->db_mtx));*/
 		data = db->db.db_data;
 		rw_enter(&db->db_rwlock, RW_READER);
 	}

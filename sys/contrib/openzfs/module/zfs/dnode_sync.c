@@ -79,6 +79,8 @@ dnode_increase_indirection(dnode_t *dn, dmu_tx_t *tx)
 	if (dn->dn_dbuf != NULL)
 		rw_enter(&dn->dn_dbuf->db_rwlock, RW_WRITER);
 	rw_enter(&db->db_rwlock, RW_WRITER);
+	/* XXX Mutex isn't held, but should be! */
+	/*ASSERT(MUTEX_HELD(&db->db_mtx));*/
 	ASSERT(db->db.db_data);
 	ASSERT(arc_released(db->db_buf));
 	ASSERT3U(sizeof (blkptr_t) * nblkptr, <=, db->db.db_size);
@@ -309,6 +311,8 @@ free_children(dmu_buf_impl_t *db, uint64_t blkid, uint64_t nblks,
 	dmu_buf_unlock_parent(db, dblt, FTAG);
 
 	dbuf_release_bp(db);
+	/* XXX db_mtx isn't held, but should be! */
+	/*ASSERT(MUTEX_HELD(&db->db_mtx));*/
 	bp = db->db.db_data;
 
 	DB_DNODE_ENTER(db);
