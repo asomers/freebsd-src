@@ -1436,6 +1436,7 @@ dbuf_read_done(zio_t *zio, const zbookmark_phys_t *zb, const blkptr_t *bp,
 static int
 dbuf_read_bonus(dmu_buf_impl_t *db, dnode_t *dn)
 {
+	void* db_data;
 	int bonuslen, max_bonuslen;
 
 	bonuslen = MIN(dn->dn_bonuslen, dn->dn_phys->dn_bonuslen);
@@ -1443,12 +1444,13 @@ dbuf_read_bonus(dmu_buf_impl_t *db, dnode_t *dn)
 	ASSERT(MUTEX_HELD(&db->db_mtx));
 	ASSERT(DB_DNODE_HELD(db));
 	ASSERT3U(bonuslen, <=, db->db.db_size);
-	db->db.db_data = kmem_alloc(max_bonuslen, KM_SLEEP);
+	db_data = kmem_alloc(max_bonuslen, KM_SLEEP);
 	arc_space_consume(max_bonuslen, ARC_SPACE_BONUS);
 	if (bonuslen < max_bonuslen)
-		memset(db->db.db_data, 0, max_bonuslen);
+		memset(db_data, 0, max_bonuslen);
 	if (bonuslen)
-		memcpy(db->db.db_data, DN_BONUS(dn->dn_phys), bonuslen);
+		memcpy(db_data, DN_BONUS(dn->dn_phys), bonuslen);
+	db->db.db_data = db_data;
 	db->db_state = DB_CACHED;
 	DTRACE_SET_STATE(db, "bonus buffer filled");
 	return (0);
