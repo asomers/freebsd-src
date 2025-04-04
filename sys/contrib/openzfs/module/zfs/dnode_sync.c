@@ -78,9 +78,8 @@ dnode_increase_indirection(dnode_t *dn, dmu_tx_t *tx)
 	(void) dbuf_read(db, NULL, DB_RF_MUST_SUCCEED|DB_RF_HAVESTRUCT);
 	if (dn->dn_dbuf != NULL)
 		rw_enter(&dn->dn_dbuf->db_rwlock, RW_WRITER);
+	mutex_enter(&db->db_mtx);
 	rw_enter(&db->db_rwlock, RW_WRITER);
-	/* XXX Mutex isn't held, but should be! */
-	/*ASSERT(MUTEX_HELD(&db->db_mtx));*/
 	ASSERT(db->db.db_data);
 	ASSERT(arc_released(db->db_buf));
 	ASSERT3U(sizeof (blkptr_t) * nblkptr, <=, db->db.db_size);
@@ -124,6 +123,7 @@ dnode_increase_indirection(dnode_t *dn, dmu_tx_t *tx)
 	memset(dn->dn_phys->dn_blkptr, 0, sizeof (blkptr_t) * nblkptr);
 
 	rw_exit(&db->db_rwlock);
+	mutex_exit(&db->db_mtx);
 	if (dn->dn_dbuf != NULL)
 		rw_exit(&dn->dn_dbuf->db_rwlock);
 
@@ -311,8 +311,12 @@ free_children(dmu_buf_impl_t *db, uint64_t blkid, uint64_t nblks,
 	dmu_buf_unlock_parent(db, dblt, FTAG);
 
 	dbuf_release_bp(db);
-	/* XXX db_mtx isn't held, but should be! */
-	/*ASSERT(MUTEX_HELD(&db->db_mtx));*/
+	/*
+	 * XXX db_mtx isn't held, but should be.  But locking it here causes a
+	 * recurse-on-non-recursive mutex panic many levels downstack:
+	 * free_verify->dbuf_hold_impl->dbuf_findbp->dbuf_hold_impl->dbuf_find
+	 */
+	/*mutex_enter(&db->db_mtx);*/
 	bp = db->db.db_data;
 
 	DB_DNODE_ENTER(db);

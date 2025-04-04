@@ -3377,15 +3377,16 @@ dbuf_findbp(dnode_t *dn, int level, uint64_t blkid, int fail_sparse,
 			*parentp = NULL;
 			return (err);
 		}
-		/* XXX db_mtx isn't held, but should be! */
-		/*ASSERT(MUTEX_HELD(&(*parentp)->db_mtx));*/
-		/* TODO: don't take lock if assertions are off */
+#ifdef DEBUG
+		mutex_enter(&(*parentp)->db_mtx);
 		rw_enter(&(*parentp)->db_rwlock, RW_READER);
 		*bpp = ((blkptr_t *)(*parentp)->db.db_data) +
 		    (blkid & ((1ULL << epbs) - 1));
 		if (blkid > (dn->dn_phys->dn_maxblkid >> (level * epbs)))
 			ASSERT(BP_IS_HOLE(*bpp));
 		rw_exit(&(*parentp)->db_rwlock);
+		mutex_exit(&(*parentp)->db_mtx);
+#endif	
 		return (0);
 	} else {
 		/* the block is referenced from the dnode */
@@ -4562,8 +4563,7 @@ dbuf_lightweight_bp(dbuf_dirty_record_t *dr)
 		return (&dn->dn_phys->dn_blkptr[dr->dt.dll.dr_blkid]);
 	} else {
 		dmu_buf_impl_t *parent_db = dr->dr_parent->dr_dbuf;
-		/* XXX db_mtx isn't held, but should be! */
-		/*ASSERT(MUTEX_HELD(&parent_db->db_mtx));*/
+		ASSERT(MUTEX_HELD(&parent_db->db_mtx));
 		int epbs = dn->dn_indblkshift - SPA_BLKPTRSHIFT;
 		VERIFY3U(parent_db->db_level, ==, 1);
 		VERIFY3P(DB_DNODE(parent_db), ==, dn);
@@ -4578,11 +4578,20 @@ dbuf_lightweight_ready(zio_t *zio)
 {
 	dbuf_dirty_record_t *dr = zio->io_private;
 	blkptr_t *bp = zio->io_bp;
+	dmu_buf_impl_t *parent_db = NULL;
 
 	if (zio->io_error != 0)
 		return;
 
 	dnode_t *dn = dr->dr_dnode;
+
+	EQUIV(dr->dr_parent == NULL, dn->dn_phys->dn_nlevels == 1);
+	if (dr->dr_parent == NULL) {
+		parent_db = dn->dn_dbuf;
+	} else {
+		parent_db = dr->dr_parent->dr_dbuf;
+	}
+	mutex_enter(&parent_db->db_mtx);
 
 	blkptr_t *bp_orig = dbuf_lightweight_bp(dr);
 	spa_t *spa = dmu_objset_spa(dn->dn_objset);
@@ -4603,16 +4612,10 @@ dbuf_lightweight_ready(zio_t *zio)
 		BP_SET_FILL(bp, fill);
 	}
 
-	dmu_buf_impl_t *parent_db;
-	EQUIV(dr->dr_parent == NULL, dn->dn_phys->dn_nlevels == 1);
-	if (dr->dr_parent == NULL) {
-		parent_db = dn->dn_dbuf;
-	} else {
-		parent_db = dr->dr_parent->dr_dbuf;
-	}
 	rw_enter(&parent_db->db_rwlock, RW_WRITER);
 	*bp_orig = *bp;
 	rw_exit(&parent_db->db_rwlock);
+	mutex_exit(&parent_db->db_mtx);
 }
 
 static void
@@ -4644,6 +4647,7 @@ noinline static void
 dbuf_sync_lightweight(dbuf_dirty_record_t *dr, dmu_tx_t *tx)
 {
 	dnode_t *dn = dr->dr_dnode;
+	dmu_buf_impl_t *parent_db = NULL;
 	zio_t *pio;
 	if (dn->dn_phys->dn_nlevels == 1) {
 		pio = dn->dn_zio;
@@ -4662,6 +4666,10 @@ dbuf_sync_lightweight(dbuf_dirty_record_t *dr, dmu_tx_t *tx)
 	 * See comment in dbuf_write().  This is so that zio->io_bp_orig
 	 * will have the old BP in dbuf_lightweight_done().
 	 */
+	if (dr->dr_dnode->dn_phys->dn_nlevels != 1) {
+		parent_db = dr->dr_parent->dr_dbuf;
+		mutex_enter(&parent_db->db_mtx);
+	}
 	dr->dr_bp_copy = *dbuf_lightweight_bp(dr);
 
 	dr->dr_zio = zio_write(pio, dmu_objset_spa(dn->dn_objset),
@@ -4670,6 +4678,9 @@ dbuf_sync_lightweight(dbuf_dirty_record_t *dr, dmu_tx_t *tx)
 	    &dr->dt.dll.dr_props, dbuf_lightweight_ready, NULL,
 	    dbuf_lightweight_done, dr, ZIO_PRIORITY_ASYNC_WRITE,
 	    ZIO_FLAG_MUSTSUCCEED | dr->dt.dll.dr_flags, &zb);
+
+	if (parent_db)
+		mutex_exit(&parent_db->db_mtx);
 
 	zio_nowait(dr->dr_zio);
 }
@@ -5008,9 +5019,8 @@ dbuf_write_children_ready(zio_t *zio, arc_buf_t *buf, void *vdb)
 	epbs = DB_DNODE(db)->dn_phys->dn_indblkshift - SPA_BLKPTRSHIFT;
 	DB_DNODE_EXIT(db);
 	ASSERT3U(epbs, <, 31);
-	/* XXX db_mtx should be held, but isn't! */
-	/*ASSERT(MUTEX_HELD(&db->db_mtx));*/
 
+	mutex_enter(&db->db_mtx);
 	/* Determine if all our children are holes */
 	for (i = 0, bp = db->db.db_data; i < 1ULL << epbs; i++, bp++) {
 		if (!BP_IS_HOLE(bp))
@@ -5031,6 +5041,7 @@ dbuf_write_children_ready(zio_t *zio, arc_buf_t *buf, void *vdb)
 		memset(db->db.db_data, 0, db->db.db_size);
 		rw_exit(&db->db_rwlock);
 	}
+	mutex_exit(&db->db_mtx);
 }
 
 static void
@@ -5242,12 +5253,11 @@ dbuf_remap(dnode_t *dn, dmu_buf_impl_t *db, dmu_tx_t *tx)
 {
 	spa_t *spa = dmu_objset_spa(db->db_objset);
 	ASSERT(dsl_pool_sync_context(spa_get_dsl(spa)));
-	/* XXX db_mtx isn't held, but should be! */
-	/*ASSERT(MUTEX_HELD(&db->db_mtx));*/
 
 	if (!spa_feature_is_active(spa, SPA_FEATURE_DEVICE_REMOVAL))
 		return;
 
+	mutex_enter(&db->db_mtx);
 	if (db->db_level > 0) {
 		blkptr_t *bp = db->db.db_data;
 		for (int i = 0; i < db->db.db_size >> SPA_BLKPTRSHIFT; i++) {
@@ -5266,6 +5276,7 @@ dbuf_remap(dnode_t *dn, dmu_buf_impl_t *db, dmu_tx_t *tx)
 			}
 		}
 	}
+	mutex_exit(&db->db_mtx);
 }
 
 
