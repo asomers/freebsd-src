@@ -3389,7 +3389,6 @@ dbuf_findbp(dnode_t *dn, int level, uint64_t blkid, int fail_sparse,
 			*parentp = NULL;
 			return (err);
 		}
-#ifdef DEBUG
 		mutex_enter(&(*parentp)->db_mtx);
 		rw_enter(&(*parentp)->db_rwlock, RW_READER);
 		*bpp = ((blkptr_t *)(*parentp)->db.db_data) +
@@ -3398,7 +3397,6 @@ dbuf_findbp(dnode_t *dn, int level, uint64_t blkid, int fail_sparse,
 			ASSERT(BP_IS_HOLE(*bpp));
 		rw_exit(&(*parentp)->db_rwlock);
 		mutex_exit(&(*parentp)->db_mtx);
-#endif	
 		return (0);
 	} else {
 		/* the block is referenced from the dnode */
