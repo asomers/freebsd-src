@@ -234,6 +234,7 @@ free_verify(dmu_buf_impl_t *db, uint64_t start, uint64_t end, dmu_tx_t *tx)
 		 * future txg.
 		 */
 		mutex_enter(&child->db_mtx);
+		rw_enter(&child->db_rwlock, RW_READER);
 		buf = child->db.db_data;
 		if (buf != NULL && child->db_state != DB_FILL &&
 		    list_is_empty(&child->db_dirty_records)) {
@@ -248,6 +249,7 @@ free_verify(dmu_buf_impl_t *db, uint64_t start, uint64_t end, dmu_tx_t *tx)
 				}
 			}
 		}
+		rw_exit(&child->db_rwlock);
 		mutex_exit(&child->db_mtx);
 
 		dbuf_rele(child, FTAG);
@@ -345,6 +347,10 @@ free_children(dmu_buf_impl_t *db, uint64_t blkid, uint64_t nblks,
 		rw_exit(&db->db_rwlock);
 	} else {
 		for (uint64_t id = start; id <= end; id++, bp++) {
+			/* 
+			 * XXX should really have db_rwlock here.  But we can't
+			 * hold it when we recurse into free_children.
+			 */
 			if (BP_IS_HOLE(bp))
 				continue;
 			rw_enter(&dn->dn_struct_rwlock, RW_READER);

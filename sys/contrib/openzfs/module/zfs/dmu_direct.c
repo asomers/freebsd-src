@@ -305,8 +305,10 @@ dmu_read_abd(dnode_t *dn, uint64_t offset, uint64_t size,
 				 */
 				err = dmu_buf_untransform_direct(db, spa);
 				ASSERT0(err);
+				rw_enter(&db->db_rwlock, RW_READER);
 				abd_copy_from_buf_off(data,
 				    (char *)db->db.db_data + boff, aoff, len);
+				rw_exit(&db->db_rwlock);
 			} else {
 				abd_zero_off(data, aoff, len);
 			}

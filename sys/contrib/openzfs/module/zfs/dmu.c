@@ -1727,8 +1727,10 @@ dmu_object_cached_size(objset_t *os, uint64_t object,
 		err = dbuf_read(db, NULL, DB_RF_CANFAIL);
 		if (err == 0) {
 			mutex_enter(&db->db_mtx);
+			rw_enter(&db->db_mtx, RW_READER);
 			dmu_cached_bps(dmu_objset_spa(os), db->db.db_data,
 			    nbps, l1sz, l2sz);
+			rw_exit(&db->db_mtx);
 			mutex_exit(&db->db_mtx);
 		}
 		/*
