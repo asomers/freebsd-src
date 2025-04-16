@@ -1498,6 +1498,7 @@ dnode_hold_impl(objset_t *os, uint64_t object, int flag, int slots,
 		dn_block = (dnode_phys_t *)db->db.db_data;
 
 		/* Initialize dnode slot status from dnode_phys_t */
+		rw_enter(&db->db_rwlock, RW_READER);
 		for (int i = 0; i < epb; i++) {
 			zrl_init(&dnh[i].dnh_zrlock);
 
@@ -1518,6 +1519,7 @@ dnode_hold_impl(objset_t *os, uint64_t object, int flag, int slots,
 				skip = 0;
 			}
 		}
+		rw_exit(&db->db_rwlock);
 		mutex_exit(&db->db_mtx);
 
 		dmu_buf_init_user(&dnc->dnc_dbu, NULL,
@@ -1574,8 +1576,10 @@ dnode_hold_impl(objset_t *os, uint64_t object, int flag, int slots,
 				DNODE_STAT_BUMP(dnode_hold_alloc_lock_misses);
 				dn = dnh->dnh_dnode;
 			} else {
+				rw_enter(&db->db_rwlock, RW_READER);
 				dn = dnode_create(os, dn_block + idx, db,
 				    object, dnh);
+				rw_exit(&db->db_rwlock);
 			}
 		}
 
@@ -1645,8 +1649,10 @@ dnode_hold_impl(objset_t *os, uint64_t object, int flag, int slots,
 		if (DN_SLOT_IS_PTR(dnh->dnh_dnode)) {
 			dn = dnh->dnh_dnode;
 		} else {
+			rw_enter(&db->db_rwlock, RW_READER);
 			dn = dnode_create(os, dn_block + idx, db,
 			    object, dnh);
+			rw_exit(&db->db_rwlock);
 		}
 
 		mutex_enter(&dn->dn_mtx);
