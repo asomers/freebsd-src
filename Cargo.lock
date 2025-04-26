@@ -780,7 +780,6 @@ version = "0.3.0"
 dependencies = [
  "approx",
  "freebsd-libgeom-sys",
- "lazy_static",
  "nix 0.29.0",
 ]
 
