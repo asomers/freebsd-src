@@ -47,21 +47,21 @@ Adding a new Rust crate
 
 Status
 ======
-[✓] Add at least one Rust executable
-[✓] Add at least one Rust library
-[ ] Add at least one Rust dynamic library
-[✓] Vendor all Rust dependencies
-[✓] Add a new program, wholly written in Rust
-[ ] Add a program that uses a private interface in base.
-[✓] Rewrite an existing program in Rust, with enhanced features
-[✓] Tweak each crate's dependencies, so as to prevent building multiple versions of the same dependency.
-[ ] Store all Rust object files in MAKEOBJDIRPREFIX, instead of target/
-[ ] Invoke `cargo` via `make` during buildworld
-[ ] Invoke `cargo` when running `make` in a subdirectory, to build just that subdirectory's contents.
-[ ] Rust should link to libs (and build with headers) in the build tree, not in the installed system
-[ ] Use Cargo's -Zbuild-dir feature, when that stabilizes, instead of CARGO_TARGET_DIR
-[ ] Rename the vendor tree to vendor/rust, to allow for the possibility of components written in other languages.
-[ ] Make should control the version of Rust used, rather than relying on PATH.
+- [✓] Add at least one Rust executable
+- [✓] Add at least one Rust library
+- [ ] Add at least one Rust dynamic library
+- [✓] Vendor all Rust dependencies
+- [✓] Add a new program, wholly written in Rust
+- [ ] Add a program that uses a private interface in base.
+- [✓] Rewrite an existing program in Rust, with enhanced features
+- [✓] Tweak each crate's dependencies, so as to prevent building multiple versions of the same dependency.
+- [ ] Store all Rust object files in MAKEOBJDIRPREFIX, instead of target/
+- [ ] Invoke `cargo` via `make` during buildworld
+- [ ] Invoke `cargo` when running `make` in a subdirectory, to build just that subdirectory's contents.
+- [ ] Rust should link to libs (and build with headers) in the build tree, not in the installed system
+- [ ] Use Cargo's -Zbuild-dir feature, when that stabilizes, instead of CARGO_TARGET_DIR
+- [ ] Rename the vendor tree to vendor/rust, to allow for the possibility of components written in other languages.
+- [ ] Make should control the version of Rust used, rather than relying on PATH.
 
 Problems
 ========
