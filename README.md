@@ -50,6 +50,7 @@ Status
 - [x] Add at least one Rust executable
 - [x] Add at least one Rust library
 - [ ] Add at least one Rust dynamic library
+- [ ] Add a crate that builds multiple binaries
 - [x] Vendor all Rust dependencies
 - [x] Add a new program, wholly written in Rust
 - [ ] Add a program that uses a private interface in base.
@@ -62,6 +63,7 @@ Status
 - [ ] Use Cargo's -Zbuild-dir feature, when that stabilizes, instead of CARGO_TARGET_DIR
 - [ ] Rename the vendor tree to vendor/rust, to allow for the possibility of components written in other languages.
 - [ ] Make should control the version of Rust used, rather than relying on PATH.
+- [ ] Install a Rust crate's tests, then execute them with Kyua.
 
 Problems
 ========
