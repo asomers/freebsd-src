@@ -61,7 +61,7 @@ Status
 - [x] Invoke `cargo` when running `make` in a subdirectory, to build just that subdirectory's contents.
 - [ ] Rust should link to libs (and build with headers) in the build tree, not in the installed system
 - [ ] Use Cargo's -Zbuild-dir feature, when that stabilizes, instead of CARGO_TARGET_DIR
-- [ ] Rename the vendor tree to vendor/rust, to allow for the possibility of components written in other languages.
+- [x] Rename the vendor tree to vendor/rust, to allow for the possibility of components written in other languages.
 - [ ] Make should control the version of Rust used, rather than relying on PATH.
 - [ ] Install a Rust crate's tests, then execute them with Kyua.
 
