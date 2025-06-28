@@ -30,6 +30,7 @@ extern "C" {
 #include <sys/mman.h>
 #include <sys/time.h>
 #include <sys/resource.h>
+#include <sys/wait.h>
 
 #include <fcntl.h>
 #include <signal.h>
@@ -110,6 +111,16 @@ class CopyFileRangeNoAtime: public CopyFileRange {
 public:
 virtual void SetUp() {
 	m_noatime = true;
+	CopyFileRange::SetUp();
+}
+};
+
+class CopyFileRangePrivileged: public CopyFileRange {
+public:
+virtual void SetUp() {
+	if (geteuid() != 0)
+                GTEST_SKIP() << "This test requires a privileged user";
+	m_allow_other = true;
 	CopyFileRange::SetUp();
 }
 };
@@ -387,6 +398,68 @@ TEST_F(CopyFileRange, mmap_write)
 	delete[] fbuf;
 }
 
+/*
+ * The FUSE protocol does not allow using different credentials with each file.
+ * In such cases, the kernel should fallback to a read/write based
+ * implementation.
+ */
+TEST_F(CopyFileRangePrivileged, MixedCred)
+{
+	const char FULLPATH1[] = "mountpoint/src.txt";
+	const char RELPATH1[] = "src.txt";
+	const char FULLPATH2[] = "mountpoint/dst.txt";
+	const char RELPATH2[] = "dst.txt";
+	const uint64_t ino1 = 42;
+	const uint64_t ino2 = 43;
+	const uint64_t fh1 = 0xdeadbeef1a7ebabe;
+	const uint64_t fh2 = 0xdeadc0de88c0ffee;
+	off_t fsize2 = 0;
+	off_t start1 = 0;
+	off_t start2 = 0;
+	const char *contents = "Hello, world!";
+	ssize_t len;
+	int fd1, status;
+
+	len = strlen(contents);
+
+	expect_lookup(RELPATH1, ino1, S_IFREG | 0666, start1 + len, 1);
+	expect_lookup(RELPATH2, ino2, S_IFREG | 0666, fsize2, 1);
+	expect_open(ino1, 0, 1, fh1);
+	expect_open(ino2, 0, 1, fh2);
+	EXPECT_CALL(*m_mock, process(
+		ResultOf([](auto in) {
+			return (in.header.opcode == FUSE_COPY_FILE_RANGE);
+		}, Eq(true)),
+		_)
+	).Times(0);
+	expect_maybe_lseek(ino1);
+	expect_read(ino1, start1, len, len, contents, 0);
+	expect_write(ino2, start2, len, len, contents);
+	expect_flush(ino2, 1, ReturnErrno(0));
+	expect_release(ino2, fh2);
+
+	fd1 = open(FULLPATH1, O_RDONLY);
+	fork(true, &status, [] {
+	}, [&] {
+		int r, fd2;
+
+		/*
+		 * Open the second file in a child process with dropped
+		 * privileges, to ensure that its ucred structure is different
+		 * than the first's.
+		 */
+		fd2 = open(FULLPATH2, O_WRONLY);
+		if (fd2 < 0) {
+			perror("open");
+			return(1);
+		}
+		r = copy_file_range(fd1, &start1, fd2, &start2, len, 0);
+		if (r < 0)
+			perror("copy_file_range");
+		return (r == len ? 0 : 1);
+	});
+	ASSERT_EQ(0, WEXITSTATUS(status));
+}
 
 /*
  * copy_file_range should send SIGXFSZ and return EFBIG when the operation
