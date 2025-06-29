@@ -162,7 +162,8 @@ void sigint_handler(int __unused sig) {
 
 void MockFS::debug_request(const mockfs_buf_in &in, ssize_t buflen)
 {
-	printf("%-11s ino=%2" PRIu64, opcode2opname(in.header.opcode),
+	printf("%4lu %-11s ino=%2" PRIu64, in.header.unique, opcode2opname(in.header.opcode),
+	//printf("%-11s ino=%2" PRIu64, opcode2opname(in.header.opcode),
 		in.header.nodeid);
 	if (verbosity > 1) {
 		printf(" uid=%5u gid=%5u pid=%5u unique=%" PRIu64 " len=%u"
@@ -415,8 +416,8 @@ void MockFS::debug_response(const mockfs_buf_out &out) {
 	}
 }
 
-MockFS::MockFS(int max_read, int max_readahead, bool allow_other,
-	bool default_permissions,
+MockFS::MockFS(const char *mountpoint, int max_read, int max_readahead,
+	bool allow_other, bool default_permissions,
 	bool push_symlinks_in, bool ro, enum poll_method pm, uint32_t flags,
 	uint32_t kernel_minor_version, uint32_t max_write, bool async,
 	bool noclusterr, unsigned time_gran, bool nointr, bool noatime,
@@ -445,11 +446,13 @@ MockFS::MockFS(int max_read, int max_readahead, bool allow_other,
 	 * Kyua sets pwd to a testcase-unique tempdir; no need to use
 	 * mkdtemp
 	 */
+	m_mountpoint = std::string(mountpoint);
+
 	/*
 	 * googletest doesn't allow ASSERT_ in constructors, so we must throw
 	 * instead.
 	 */
-	if (mkdir("mountpoint" , 0755) && errno != EEXIST)
+	if (mkdir(m_mountpoint.c_str() , 0755) && errno != EEXIST)
 		throw(std::system_error(errno, std::system_category(),
 			"Couldn't make mountpoint directory"));
 
@@ -467,7 +470,7 @@ MockFS::MockFS(int max_read, int max_readahead, bool allow_other,
 
 	build_iovec(&iov, &iovlen, "fstype", __DECONST(void *, "fusefs"), -1);
 	build_iovec(&iov, &iovlen, "fspath",
-		    __DECONST(void *, "mountpoint"), -1);
+		    __DECONST(void *, m_mountpoint.c_str()), -1);
 	build_iovec(&iov, &iovlen, "from", __DECONST(void *, "/dev/fuse"), -1);
 	sprintf(fdstr, "%d", m_fuse_fd);
 	build_iovec(&iov, &iovlen, "fd", fdstr, -1);
@@ -546,8 +549,8 @@ MockFS::MockFS(int max_read, int max_readahead, bool allow_other,
 MockFS::~MockFS() {
 	kill_daemon();
 	join_daemon();
-	::unmount("mountpoint", MNT_FORCE);
-	rmdir("mountpoint");
+	::unmount(m_mountpoint.c_str(), MNT_FORCE);
+	rmdir(m_mountpoint.c_str());
 	if (m_kq >= 0)
 		close(m_kq);
 }
@@ -975,6 +978,7 @@ void MockFS::read_request(mockfs_buf_in &in, ssize_t &res) {
 	default:
 		FAIL() << "not yet implemented";
 	}
+	printf("reading request from m_fuse_fd=%d ", m_fuse_fd);
 	res = read(m_fuse_fd, &in, sizeof(in));
 
 	if (res < 0 && !m_quit) {
@@ -1056,5 +1060,5 @@ void* MockFS::service(void *pthr_data) {
 }
 
 void MockFS::unmount() {
-	::unmount("mountpoint", 0);
+	::unmount(m_mountpoint.c_str(), 0);
 }

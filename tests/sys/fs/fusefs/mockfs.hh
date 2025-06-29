@@ -36,6 +36,7 @@ extern "C" {
 #include "fuse_kernel.h"
 }
 
+#include <string>
 #include <unordered_set>
 
 #include <gmock/gmock.h>
@@ -292,6 +293,8 @@ class MockFS {
 	/* The minor version of the kernel API that this mock daemon targets */
 	uint32_t m_kernel_minor_version;
 
+	std::string m_mountpoint;
+
 	int m_kq;
 
 	/*
@@ -361,8 +364,9 @@ class MockFS {
 	bool m_quit;
 
 	/* Create a new mockfs and mount it to a tempdir */
-	MockFS(int max_read, int max_readahead, bool allow_other,
-		bool default_permissions, bool push_symlinks_in, bool ro,
+	MockFS(const char *mountpoint, int max_read, int max_readahead,
+		bool allow_other, bool default_permissions,
+		bool push_symlinks_in, bool ro,
 		enum poll_method pm, uint32_t flags,
 		uint32_t kernel_minor_version, uint32_t max_write, bool async,
 		bool no_clusterr, unsigned time_gran, bool nointr,
