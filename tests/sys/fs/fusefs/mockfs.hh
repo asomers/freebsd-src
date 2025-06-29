@@ -437,7 +437,7 @@ class MockFS {
 	 * plus a delayed response to an earlier operation, push two bufs.
 	 * Test cases must define each response using Googlemock expectations
 	 */
-	MOCK_METHOD2(process, void(const mockfs_buf_in&,
+	MOCK_METHOD(void, process, (const mockfs_buf_in&,
 				std::vector<std::unique_ptr<mockfs_buf_out>>&));
 
 	/* Gracefully unmount */
