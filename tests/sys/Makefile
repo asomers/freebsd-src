@@ -12,6 +12,7 @@ TESTS_SUBDIRS+=		${_cddl}
 # XXX: Currently broken in CI
 #TESTS_SUBDIRS+=		compat32
 TESTS_SUBDIRS+=		devrandom
+TESTS_SUBDIRS+=		exterr
 TESTS_SUBDIRS+=		fifo
 TESTS_SUBDIRS+=		file
 TESTS_SUBDIRS+=		fs

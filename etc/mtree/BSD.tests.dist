@@ -811,6 +811,8 @@
         ..
         dtrace
         ..
+        exterr
+        ..
         fifo
         ..
         file
