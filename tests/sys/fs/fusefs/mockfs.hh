@@ -285,7 +285,6 @@ class MockFS {
 	 * It must run in a separate thread so it doesn't deadlock with the
 	 * client test code.
 	 */
-public:
 	pthread_t m_daemon_id;
 
 	/* file descriptor of /dev/fuse control device */

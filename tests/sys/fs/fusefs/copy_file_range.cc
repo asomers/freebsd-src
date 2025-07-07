@@ -59,7 +59,6 @@ void expect_maybe_lseek(uint64_t ino)
 
 void expect_open(uint64_t ino, uint32_t flags, int times, uint64_t fh)
 {
-	printf("Setting FUSE_OPEN(%lu) expectation for %p\n", ino, m_mock->m_daemon_id);
 	EXPECT_CALL(*m_mock, process(
 		ResultOf([=](auto in) {
 			return (in.header.opcode == FUSE_OPEN &&
@@ -115,20 +114,6 @@ virtual void SetUp() {
 	CopyFileRange::SetUp();
 }
 };
-
-//class CopyFileRangeExdev: public CopyFileRange {
-	//public:
-	//char tmpfile[80] = "/tmp/fuse.copy_file_range.XXXXXX";
-
-	//virtual void TearDown() {
-		//if (tmpfd >= 0) {
-			//close(tmpfd);
-			//unlink(tmpfile);
-		//}
-
-		//FuseTest::TearDown();
-	//}
-//};
 
 class CopyFileRangePrivileged: public CopyFileRange {
 public:
@@ -414,23 +399,21 @@ TEST_F(CopyFileRange, mmap_write)
 }
 
 /*
- * cross-device copy_file_range is theoretically possible in general, but not
- * with the FUSE protocol.  fusefs should fall back to a read/write based
- * implementation.
- * XXX doesn't cover the correct paths unless both file systems are fusefs
+ * Cross-device copy_file_range is theoretically possible in general, as long
+ * as both paths reside in the same type of file system, but not with the FUSE
+ * protocol.  fusefs should fall back to a read/write based implementation.
  */
 TEST_F(CopyFileRange, exdev)
 {
-	//MockFS m_mock;
 	const char FULLPATH1[] = "mountpoint/src.txt";
 	const char RELPATH1[] = "src.txt";
 	const char FULLPATH2[] = "mountpoint2/dst.txt";
-	//const char RELPATH2[] = "dst.txt";
+	const char RELPATH2[] = "dst.txt";
 	const uint64_t ino1 = 42;
-	//const uint64_t ino2 = 43;
+	const uint64_t ino2 = 43;
 	const uint64_t fh1 = 0xdeadbeef1a7ebabe;
-	//const uint64_t fh2 = 0xdeadc0de88c0ffee;
-	//off_t fsize2 = 0;
+	const uint64_t fh2 = 0xdeadc0de88c0ffee;
+	off_t fsize2 = 0;
 	off_t start1 = 0;
 	off_t start2 = 0;
 	const char *contents = "Hello, world!";
@@ -440,58 +423,83 @@ TEST_F(CopyFileRange, exdev)
 	len = strlen(contents);
 
 	MockFS mock2 = MockFS("mountpoint2", 0, 0, false, false, false, false,
-		BLOCKING, 0, FUSE_KERNEL_MINOR_VERSION, 0, false, false, 1,
-		false, false, "", "", "");
+		BLOCKING, 0, FUSE_KERNEL_MINOR_VERSION, 65536, false, false, 1,
+		false, false, "", "", false);
 
 	expect_lookup(RELPATH1, ino1, S_IFREG | 0644, start1 + len, 1);
 	expect_open(ino1, 0, 1, fh1);
-	//expect_open(ino2, 0, 1, fh2);
-	//EXPECT_CALL(*m_mock, process(
-		//ResultOf([=](auto in) {
-			//return (in.header.opcode == FUSE_COPY_FILE_RANGE);
-		//}, Eq(true)),
-		//_)
-	//).Times(0);
-	//expect_maybe_lseek(ino1);
-	//expect_read(ino1, start1, len, len, contents, 0);
-	//expect_write(ino2, start2, len, len, contents);
+	EXPECT_CALL(*m_mock, process(
+		ResultOf([=](auto in) {
+			return (in.header.opcode == FUSE_COPY_FILE_RANGE);
+		}, Eq(true)),
+		_)
+	).Times(0);
+	expect_maybe_lseek(ino1);
+	expect_read(ino1, start1, len, len, contents, 0);
 
 	/* The regular helper methods don't help for mock2; do it manually */
-	//EXPECT_CALL(mock2, process(					\
-		//ResultOf([=](auto in) {					\
-			//return (in.header.opcode == FUSE_LOOKUP &&	\
-				//in.header.nodeid == (FUSE_ROOT_ID) &&	\
-				//strcmp(in.body.lookup, (RELPATH2)) == 0);	\
-		//}, Eq(true)),						\
-		//_)							\
-	//).WillRepeatedly(Invoke(
-		//ReturnImmediate([=](auto in __unused, auto& out) {
-		//SET_OUT_HEADER_LEN(out, entry);
-		//out.body.entry.attr.mode = S_IFREG | 0644;
-		//out.body.entry.nodeid = ino2;
-		//out.body.entry.attr.nlink = 1;
-		//out.body.entry.attr_valid = UINT64_MAX;
-		//out.body.entry.attr.size = fsize2;
-	//})));
-	//printf("Setting FUSE_OPEN(ino2) expectation for %p\n", mock2.m_daemon_id);
-	//EXPECT_CALL(mock2, process(
-		//ResultOf([=](auto in) {
-			//return (in.header.opcode == FUSE_OPEN &&
-				//in.header.nodeid == ino2);
-		//}, Eq(true)),
-		//_)
-	//).WillRepeatedly(Invoke(
-		//ReturnImmediate([=](auto in __unused, auto& out) {
-		//out.header.len = sizeof(out.header);
-		//SET_OUT_HEADER_LEN(out, open);
-		//out.body.open.fh = fh2;
-	//})));
+	EXPECT_CALL(mock2, process(					\
+		ResultOf([=](auto in) {					\
+			return (in.header.opcode == FUSE_LOOKUP &&	\
+				in.header.nodeid == (FUSE_ROOT_ID) &&	\
+				strcmp(in.body.lookup, (RELPATH2)) == 0);\
+		}, Eq(true)),						\
+		_)							\
+	).WillRepeatedly(Invoke(
+		ReturnImmediate([=](auto in __unused, auto& out) {
+		SET_OUT_HEADER_LEN(out, entry);
+		out.body.entry.attr.mode = S_IFREG | 0644;
+		out.body.entry.nodeid = ino2;
+		out.body.entry.attr.nlink = 1;
+		out.body.entry.attr_valid = UINT64_MAX;
+		out.body.entry.attr.size = fsize2;
+	})));
+	EXPECT_CALL(mock2, process(
+		ResultOf([](auto in) {
+			return (in.header.opcode == FUSE_ACCESS);
+		}, Eq(true)),
+		_)
+	).Times(AnyNumber())
+	.WillRepeatedly(Invoke(ReturnErrno(ENOSYS)));
+	EXPECT_CALL(mock2, process(
+		ResultOf([=](auto in) {
+			return (in.header.opcode == FUSE_OPEN &&
+				in.header.nodeid == ino2);
+		}, Eq(true)),
+		_)
+	).WillRepeatedly(Invoke(
+		ReturnImmediate([=](auto in __unused, auto& out) {
+		out.header.len = sizeof(out.header);
+		SET_OUT_HEADER_LEN(out, open);
+		out.body.open.fh = fh2;
+	})));
+	EXPECT_CALL(mock2, process(
+		ResultOf([](auto in) {
+			return (in.header.opcode == FUSE_LSEEK);
+		}, Eq(true)),
+		_)
+	).Times(AtMost(1))
+	.WillRepeatedly(Invoke(ReturnErrno(ENOSYS)));
+	EXPECT_CALL(mock2, process(
+		ResultOf([=](auto in) {
+			const char *buf = (const char*)in.body.bytes +
+				sizeof(struct fuse_write_in);
 
-
+			return (in.header.opcode == FUSE_WRITE &&
+				in.header.nodeid == ino2 &&
+				in.body.write.offset == 0  &&
+				in.body.write.size == len &&
+				0 == bcmp(buf, contents, len));
+		}, Eq(true)),
+		_)
+	).WillOnce(Invoke(ReturnImmediate([=](auto in __unused, auto& out) {
+		SET_OUT_HEADER_LEN(out, write);
+		out.body.write.size = len;
+	})));
 
 	fd1 = open(FULLPATH1, O_RDONLY);
 	ASSERT_GE(fd1, 0);
-	fd2 = open(FULLPATH2, O_WRONLY);
+	fd2 = open(FULLPATH2, O_RDWR);
 	ASSERT_GE(fd2, 0);
 	ASSERT_EQ(len, copy_file_range(fd1, &start1, fd2, &start2, len, 0));
 

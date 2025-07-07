@@ -162,8 +162,7 @@ void sigint_handler(int __unused sig) {
 
 void MockFS::debug_request(const mockfs_buf_in &in, ssize_t buflen)
 {
-	printf("%p %2lu %-11s ino=%2" PRIu64, m_daemon_id, in.header.unique, opcode2opname(in.header.opcode),
-	//printf("%-11s ino=%2" PRIu64, opcode2opname(in.header.opcode),
+	printf("%-11s ino=%2" PRIu64, opcode2opname(in.header.opcode),
 		in.header.nodeid);
 	if (verbosity > 1) {
 		printf(" uid=%5u gid=%5u pid=%5u unique=%" PRIu64 " len=%u"
@@ -812,7 +811,6 @@ void MockFS::loop() {
 			debug_request(*in, buflen);
 		audit_request(*in, buflen);
 		if (pid_ok((pid_t)in->header.pid)) {
-			printf("Processing for daemon %p\n", m_daemon_id);
 			process(*in, out);
 		} else {
 			/* 
@@ -905,7 +903,6 @@ bool MockFS::pid_ok(pid_t pid) {
 void MockFS::process_default(const mockfs_buf_in& in,
 		std::vector<std::unique_ptr<mockfs_buf_out>> &out)
 {
-	printf("Sending default response for unique %lu\n", in.header.unique);
 	std::unique_ptr<mockfs_buf_out> out0(new mockfs_buf_out);
 	out0->header.unique = in.header.unique;
 	out0->header.error = -EOPNOTSUPP;
@@ -980,7 +977,6 @@ void MockFS::read_request(mockfs_buf_in &in, ssize_t &res) {
 	default:
 		FAIL() << "not yet implemented";
 	}
-	printf("reading request from m_fuse_fd=%d ", m_fuse_fd);
 	res = read(m_fuse_fd, &in, sizeof(in));
 
 	if (res < 0 && !m_quit) {
