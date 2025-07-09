@@ -6,6 +6,15 @@ TESTSDIR=	${TESTSBASE}/sys/fs/fusefs
 
 ATF_TESTS_SH+=	ctl
 
+# TODO: new fuse coverage tests.  Delete this comment before merging.
+#[x] EROFS for posix_fallocate
+# [x] copy_file_range with different credentials for each file
+# [x] cross-device copy-file-range
+# [ ] VOP_CREATE with a file that isn't VREG
+# [ ] fuse_vnop_open with chr, blk, or fifo files.
+# [ ] getdirentries with a buffer smaller than a single dirent
+# [ ] fuse_init_out has 0 max_write value, then tries a copy_file_range fallback
+
 # We could simply link all of these files into a single executable.  But since
 # Kyua treats googletest programs as plain tests, it's better to separate them
 # out, so we get more granular reporting.
@@ -14,7 +23,7 @@ ATF_TESTS_SH+=	ctl
 #GTESTS+=	bad_server
 #GTESTS+=	bmap
 #GTESTS+=	cache
-GTESTS+=	copy_file_range
+#GTESTS+=	copy_file_range
 #GTESTS+=	create
 #GTESTS+=	default_permissions
 #GTESTS+=	default_permissions_privileged
@@ -53,7 +62,7 @@ GTESTS+=	copy_file_range
 #GTESTS+=	statfs
 #GTESTS+=	symlink
 #GTESTS+=	unlink
-#GTESTS+=	write
+GTESTS+=	write
 #GTESTS+=	xattr
 
 .for p in ${GTESTS}

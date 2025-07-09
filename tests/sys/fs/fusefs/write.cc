@@ -198,6 +198,7 @@ virtual void SetUp() {
 	 * For this test, m_maxwrite must be less than either m_maxbcachebuf or
 	 * maxphys.
 	 */
+	//m_maxwrite = 0;
 	m_maxwrite = 32768;
 	Write::SetUp();
 }
@@ -874,11 +875,13 @@ TEST_F(WriteMaxWrite, write)
 	maybe_expect_write(ino, 0, halfbufsize, contents);
 	maybe_expect_write(ino, halfbufsize, halfbufsize,
 		&contents[halfbufsize / sizeof(int)]);
+	expect_flush(ino, 1, ReturnErrno(0));
 
 	fd = open(FULLPATH, O_WRONLY);
 	ASSERT_LE(0, fd) << strerror(errno);
 
 	ASSERT_EQ(bufsize, write(fd, contents, bufsize)) << strerror(errno);
+	close(fd);
 	leak(fd);
 
 	delete[] contents;
