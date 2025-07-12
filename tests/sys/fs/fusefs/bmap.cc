@@ -178,6 +178,40 @@ TEST_F(Bmap, default_)
 }
 
 /*
+ * The server returns EINVAL for some reason for FUSE_BMAP.  fusefs should
+ * faithfully report that error up to the caller.
+ */
+TEST_F(Bmap, einval)
+{
+	struct fiobmap2_arg arg;
+	const off_t filesize = 1 << 30;
+	int64_t lbn = 100;
+	const ino_t ino = 42;
+	int fd;
+
+	expect_lookup(RELPATH, 42, filesize);
+	expect_open(ino, 0, 1);
+	EXPECT_CALL(*m_mock, process(
+		ResultOf([=](auto in) {
+			return (in.header.opcode == FUSE_BMAP &&
+				in.header.nodeid == ino);
+		}, Eq(true)),
+		_)
+	).WillOnce(Invoke(ReturnErrno(EINVAL)));
+
+	fd = open(FULLPATH, O_RDWR);
+	ASSERT_LE(0, fd) << strerror(errno);
+
+	arg.bn = lbn;
+	arg.runp = -1;
+	arg.runb = -1;
+	ASSERT_EQ(-1, ioctl(fd, FIOBMAP2, &arg));
+	EXPECT_EQ(EINVAL, errno);
+
+	leak(fd);
+}
+
+/*
  * VOP_BMAP should not query the server for the file's size, even if its cached
  * attributes have expired.
  * Regression test for https://bugs.freebsd.org/bugzilla/show_bug.cgi?id=256937
