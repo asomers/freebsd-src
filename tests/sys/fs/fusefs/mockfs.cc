@@ -246,6 +246,8 @@ void MockFS::debug_request(const mockfs_buf_in &in, ssize_t buflen)
 				" out_size=%" PRIu32,
 				in.body.ioctl.flags, in.body.ioctl.cmd,
 				in.body.ioctl.in_size, in.body.ioctl.out_size);
+			if (verbosity > 1)
+				printf(" arg=%#lx", in.body.ioctl.arg);
 			break;
 		case FUSE_LINK:
 			printf(" oldnodeid=%" PRIu64, in.body.link.oldnodeid);

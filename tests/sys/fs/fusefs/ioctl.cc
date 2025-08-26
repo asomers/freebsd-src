@@ -54,6 +54,24 @@ void expect_ioctl(uint64_t ino, ProcessMockerT r)
 	).WillOnce(Invoke(r)).RetiresOnSaturation();
 }
 
+void expect_ioctl_io(uint64_t ino, uint32_t flags, uint32_t cmd, uintptr_t arg)
+{
+	assert(cmd & IOC_VOID);
+
+	EXPECT_CALL(*m_mock, process(
+		ResultOf([=](auto in) {
+			return (in.header.opcode == FUSE_IOCTL &&
+				in.header.nodeid == ino &&
+				in.body.ioctl.flags == flags &&
+				in.body.ioctl.cmd == cmd &&
+				in.body.ioctl.arg == arg
+				);
+		}, Eq(true)), _)
+	).WillOnce(Invoke(ReturnImmediate([=](auto in __unused, auto& out) {
+		SET_OUT_HEADER_LEN(out, ioctl);
+	}))).RetiresOnSaturation();
+}
+
 void expect_ioctl_r(uint64_t ino, uint32_t flags, uint32_t cmd,
     const void *contents, uint64_t osize)
 {
@@ -71,11 +89,6 @@ void expect_ioctl_r(uint64_t ino, uint32_t flags, uint32_t cmd,
 		uint8_t *out_buf = out.body.bytes + sizeof(out.body.ioctl);
 
 		assert(osize <= sizeof(out.body.bytes));
-		/* 
-		 * If out_size is too small, there is a complicated recovery
-		 * process, but it is not yet implemented in FreeBSD.
-		 */
-		assert(osize <= in.body.ioctl.out_size);
 
 		SET_OUT_HEADER_LEN(out, ioctl);
 		memcpy(out_buf, contents, osize);
@@ -86,7 +99,7 @@ void expect_ioctl_r(uint64_t ino, uint32_t flags, uint32_t cmd,
 void expect_ioctl_w(uint64_t ino, uint32_t flags, uint32_t cmd,
     const void *contents, uint64_t isize)
 {
-	assert(cmd & IOC_OUT);
+	assert(cmd & IOC_IN);
 
 	EXPECT_CALL(*m_mock, process(
 		ResultOf([=](auto in) {
@@ -166,6 +179,24 @@ TEST_F(Ioctl, enosys)
 	leak(fd);
 }
 
+/* _IO() ioctls pack their payload into the arg value.  */
+TEST_F(Ioctl, io)
+{
+	unsigned long req = _IO(0xff, 6);
+	unsigned long arg = 0xdeadbeef;
+	int fd;
+
+	expect_opendir(FUSE_ROOT_ID);
+	expect_ioctl_io(FUSE_ROOT_ID, FUSE_IOCTL_DIR, req, arg);
+
+	fd = open("mountpoint", O_RDONLY | O_DIRECTORY);
+	ASSERT_LE(0, fd) << strerror(errno);
+
+	EXPECT_EQ(0, ioctl(fd, req, arg)) << strerror(errno);
+
+	leak(fd);
+}
+
 /*
  * For _IOR() and _IOWR(), The server is allowed to write fewer bytes
  * than IOCPARM_LEN(req).
@@ -173,12 +204,12 @@ TEST_F(Ioctl, enosys)
 TEST_F(Ioctl, ior)
 {
 	const char *CONTENTS = "abcdefgh";
-	ssize_t clen = strlen(CONTENTS);
-	char buf[sizeof(OUTPUT_DATA) + 1] = { 0 };
+	const ssize_t clen = sizeof(CONTENTS) + 1;
+	char buf[clen] = { 0 };
 	unsigned long req = _IOR(0xff, 1, buf);
 	int fd;
 
-	printf("req = %#x\n", req);
+	//printf("req = %#lx\n", req);
 	expect_opendir(FUSE_ROOT_ID);
 	expect_ioctl_r(FUSE_ROOT_ID, FUSE_IOCTL_DIR, req, (const void*)CONTENTS,
 	    clen);
@@ -198,15 +229,17 @@ TEST_F(Ioctl, ior)
  */
 TEST_F(Ioctl, ior_overflow)
 {
-	//const char *CONTENTS = "abcdefgh";
-	char buf[sizeof(OUTPUT_DATA) - 1] = { 0 };
+	const char *CONTENTS = "abcdefgh";
+	const ssize_t clen = sizeof(CONTENTS) + 1;
+	char buf[clen] = { 0 };
 	unsigned long req = _IOR(0xff, 2, buf);
 	int fd;
 
-	printf("req = %#x\n", req);
+	//printf("req = %#lx\n", req);
 	expect_opendir(FUSE_ROOT_ID);
-	expect_ioctl_rw(FUSE_ROOT_ID);
-	//expect_ioctl_r(FUSE_ROOT_ID, FUSE_IOCTL_DIR, req, (const void*)CONTENTS,
+	//expect_ioctl_rw(FUSE_ROOT_ID);
+	expect_ioctl_r(FUSE_ROOT_ID, FUSE_IOCTL_DIR, req, (const void*)CONTENTS,
+			clen + 1);
 
 	fd = open("mountpoint", O_RDONLY | O_DIRECTORY);
 	ASSERT_LE(0, fd) << strerror(errno);
@@ -219,16 +252,19 @@ TEST_F(Ioctl, ior_overflow)
 
 TEST_F(Ioctl, iow)
 {
-	unsigned long req = _IOW(0xff, 3, INPUT_DATA);
+	const char *CONTENTS = "abcdefgh";
+	const ssize_t clen = sizeof(CONTENTS) + 1;
+	unsigned long req = _IOW(0xff, 3, CONTENTS);
 	int fd;
 
 	expect_opendir(FUSE_ROOT_ID);
-	expect_ioctl_rw(FUSE_ROOT_ID);
+	expect_ioctl_w(FUSE_ROOT_ID, FUSE_IOCTL_DIR, req, (const void*)CONTENTS,
+		clen);
 
 	fd = open("mountpoint", O_RDONLY | O_DIRECTORY);
 	ASSERT_LE(0, fd) << strerror(errno);
 
-	EXPECT_EQ(0, ioctl(fd, req, INPUT_DATA)) << strerror(errno);
+	EXPECT_EQ(0, ioctl(fd, req, CONTENTS)) << strerror(errno);
 
 	leak(fd);
 }
