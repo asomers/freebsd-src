@@ -26,6 +26,7 @@ SRCS.capsicum-test+=	\
 	capmode.cc \
 	fcntl.cc \
 	ioctl.cc \
+	linux.cc \
 	openat.cc \
 	sysctl.cc \
 	select.cc \
