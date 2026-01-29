@@ -165,7 +165,6 @@ FORK_TEST_F(FexecveWithScript, CapModeScriptFail) {
   EXPECT_EQ(-1, fexecve_(fd, argv_pass_, null_envp));
 }
 
-#ifdef HAVE_EXECVEAT
 class Execveat : public Execve {
  public:
   Execveat() : Execve() {}
@@ -204,4 +203,3 @@ TEST_F(Execveat, NoUpwardTraversal) {
   free(abspath);
   close(dfd);
 }
-#endif

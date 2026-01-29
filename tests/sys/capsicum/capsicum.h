@@ -4,13 +4,7 @@
 #ifndef __CAPSICUM_H__
 #define __CAPSICUM_H__
 
-#ifdef __FreeBSD__
 #include "capsicum-freebsd.h"
-#endif
-
-#ifdef __linux__
-#include "capsicum-linux.h"
-#endif
 
 /*
  * CAP_ALL/CAP_NONE is a value in FreeBSD9.x Capsicum, but a functional macro
