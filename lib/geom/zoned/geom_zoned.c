@@ -109,7 +109,8 @@ zoned_create(struct gctl_req *req)
 		return;
 	}
 	zonesize = (off_t)gctl_get_intmax(req, "zonesize");
-	nonseqzonesize = (off_t)gctl_get_intmax(req, "nonseqzonesize");
+	/* TODO: not implemented yet */
+	/* nonseqzonesize = (off_t)gctl_get_intmax(req, "nonseqzonesize"); */
 	name = gctl_get_ascii(req, "arg0");
 	dev = gctl_get_ascii(req, "arg1");
 
