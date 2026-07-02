@@ -28,6 +28,7 @@
 
 #include <sys/param.h>
 #include <sys/bio.h>
+#include <sys/disk_zone.h>
 #include <sys/endian.h>
 #include <sys/kernel.h>
 #include <sys/kobj.h>
@@ -874,6 +875,107 @@ g_part_ctl_bootcode(struct gctl_req *req, struct g_part_parms *gpp)
 	return (error);
 }
 
+/*
+ * Check that every zone overlapping the sector range [start, start + length)
+ * is a conventional (randomly writable) zone. Returns 0 if so, EOPNOTSUPP if
+ * a sequential-write-required zone is found and any other errno if the zone
+ * report itself failed.
+ */
+static int
+g_part_zoned_check_range(struct g_consumer *cp, uint64_t start,
+    uint64_t length)
+{
+	struct disk_zone_args zar;
+	struct disk_zone_rep_entry *entries;
+	struct disk_zone_report *rep;
+	uint64_t end, lba;
+	uint32_t i;
+	int error;
+	const uint32_t nent = 16;
+
+	if (length == 0)
+		return (0);
+
+	entries = g_malloc(nent * sizeof(*entries), M_WAITOK | M_ZERO);
+	end = start + length;
+	lba = start;
+	error = 0;
+	while (lba < end) {
+		bzero(&zar, sizeof(zar));
+		zar.zone_cmd = DISK_ZONE_REPORT_ZONES;
+		rep = &zar.zone_params.report;
+		rep->starting_id = lba;
+		rep->rep_options = DISK_ZONE_REP_ALL;
+		rep->entries_allocated = nent;
+		rep->entries = entries;
+		error = g_io_zonecmd(&zar, cp);
+		if (error != 0)
+			break;
+		rep = &zar.zone_params.report;
+		if (rep->entries_filled == 0) {
+			error = ENXIO;
+			break;
+		}
+		for (i = 0; i < rep->entries_filled && lba < end; i++) {
+			if (entries[i].zone_type !=
+			    DISK_ZONE_TYPE_CONVENTIONAL) {
+				error = EOPNOTSUPP;
+				break;
+			}
+			lba = entries[i].zone_start_lba +
+			    entries[i].zone_length;
+		}
+		if (error != 0)
+			break;
+	}
+	g_free(entries);
+	return (error);
+}
+
+/*
+ * A host-managed zoned provider only accepts random writes within its
+ * conventional zones, while partition metadata is rewritten in place. Verify
+ * that the sectors outside the allocatable range -- where the scheme keeps
+ * its tables -- and the head/tail sectors scrubbed at commit time all fall
+ * in conventional zones. Non-zoned, drive-managed and host-aware providers
+ * accept random writes everywhere and pass trivially.
+ */
+static int
+g_part_zoned_check(struct g_consumer *cp, struct g_part_table *table)
+{
+	struct disk_zone_args zar;
+	struct g_provider *pp;
+	uint64_t headsecs, last, tailsecs;
+	int error;
+
+	bzero(&zar, sizeof(zar));
+	zar.zone_cmd = DISK_ZONE_GET_PARAMS;
+	error = g_io_zonecmd(&zar, cp);
+	if (error != 0)
+		return (0);	/* Not a zoned provider. */
+	if (zar.zone_params.disk_params.zone_mode !=
+	    DISK_ZONE_MODE_HOST_MANAGED)
+		return (0);
+
+	pp = cp->provider;
+	last = pp->mediasize / pp->sectorsize - 1;
+	if (table->gpt_scheme != &g_part_null_scheme) {
+		headsecs = table->gpt_first;
+		tailsecs = last - table->gpt_last;
+	} else
+		headsecs = tailsecs = 0;
+	if (table->gpt_smhead != 0)
+		headsecs = MAX(headsecs, (uint64_t)fls(table->gpt_smhead));
+	if (table->gpt_smtail != 0)
+		tailsecs = MAX(tailsecs, (uint64_t)fls(table->gpt_smtail));
+
+	error = g_part_zoned_check_range(cp, 0, headsecs);
+	if (error == 0)
+		error = g_part_zoned_check_range(cp, last + 1 - tailsecs,
+		    tailsecs);
+	return (error);
+}
+
 static int
 g_part_ctl_commit(struct gctl_req *req, struct g_part_parms *gpp)
 {
@@ -898,6 +1000,19 @@ g_part_ctl_commit(struct gctl_req *req, struct g_part_parms *gpp)
 	g_topology_unlock();
 
 	cp = LIST_FIRST(&gp->consumer);
+
+	/*
+	 * Refuse to write the table if any of it would land in a zone that
+	 * does not accept random writes.
+	 */
+	error = g_part_zoned_check(cp, table);
+	if (error != 0) {
+		g_topology_lock();
+		gctl_error(req, "%d table location is not randomly writable "
+		    "on zoned provider %s", error, cp->provider->name);
+		return (error);
+	}
+
 	if ((table->gpt_smhead | table->gpt_smtail) != 0) {
 		pp = cp->provider;
 		buf = g_malloc(pp->sectorsize, M_WAITOK | M_ZERO);
