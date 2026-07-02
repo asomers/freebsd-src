@@ -125,6 +125,8 @@ static int g_part_bsd64_destroy(struct g_part_table *, struct g_part_parms *);
 static void g_part_bsd64_dumpconf(struct g_part_table *, struct g_part_entry *,
     struct sbuf *, const char *);
 static int g_part_bsd64_dumpto(struct g_part_table *, struct g_part_entry *);
+static int g_part_bsd64_getmdrange(struct g_part_table *, struct g_provider *,
+    int, quad_t *, quad_t *);
 static int g_part_bsd64_modify(struct g_part_table *, struct g_part_entry *,
     struct g_part_parms *);
 static const char *g_part_bsd64_name(struct g_part_table *, struct g_part_entry *,
@@ -144,6 +146,7 @@ static kobj_method_t g_part_bsd64_methods[] = {
 	KOBJMETHOD(g_part_destroy,	g_part_bsd64_destroy),
 	KOBJMETHOD(g_part_dumpconf,	g_part_bsd64_dumpconf),
 	KOBJMETHOD(g_part_dumpto,	g_part_bsd64_dumpto),
+	KOBJMETHOD(g_part_getmdrange,	g_part_bsd64_getmdrange),
 	KOBJMETHOD(g_part_modify,	g_part_bsd64_modify),
 	KOBJMETHOD(g_part_resize,	g_part_bsd64_resize),
 	KOBJMETHOD(g_part_name,		g_part_bsd64_name),
@@ -419,6 +422,23 @@ g_part_bsd64_dumpto(struct g_part_table *table, struct g_part_entry *baseentry)
 	    EQUUID(&entry->type_uuid, &bsd64_uuid_dfbsd_swap) ||
 	    EQUUID(&entry->type_uuid, &bsd64_uuid_freebsd_swap))
 		return (1);
+	return (0);
+}
+
+static int
+g_part_bsd64_getmdrange(struct g_part_table *basetable, struct g_provider *pp,
+    int idx, quad_t *start, quad_t *length)
+{
+
+	if (idx != 0)
+		return (ENOENT);
+	*start = 0;
+	/*
+	 * A label read from disk may have a d_pbase smaller than the label
+	 * itself; write() always emits a full struct disklabel64.
+	 */
+	*length = MAX(basetable->gpt_first,
+	    (quad_t)howmany(sizeof(struct disklabel64), pp->sectorsize));
 	return (0);
 }
 
