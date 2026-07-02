@@ -113,6 +113,19 @@ CODE {
 	{
 		return (ENOIOCTL);
 	}
+
+	static int
+	default_getmdrange(struct g_part_table *table,
+	    struct g_provider *pp __unused, int idx, quad_t *start,
+	    quad_t *length)
+	{
+
+		if (idx != 0)
+			return (ENOENT);
+		*start = 0;
+		*length = table->gpt_first;
+		return (0);
+	}
 };
 
 # add() - scheme specific processing for the add verb.
@@ -170,6 +183,20 @@ METHOD void fullname {
 	struct sbuf *sb;
 	const char *pfx;
 } DEFAULT default_fullname;
+
+# getmdrange() - return the idx'th range of sectors, as [start, start+length),
+# in which the scheme keeps its on-disk metadata. Ranges are numbered from 0
+# up; ENOENT is returned when idx is past the last range. This is used to
+# make sure metadata only lands in randomly writable zones of zoned providers.
+# The default covers everything below the first allocatable LBA, which is
+# where most schemes keep their one table.
+METHOD int getmdrange {
+	struct g_part_table *table;
+	struct g_provider *pp;
+	int idx;
+	quad_t *start;
+	quad_t *length;
+} DEFAULT default_getmdrange;
 
 # ioctl() - implement historic ioctls, perhaps.
 METHOD int ioctl {

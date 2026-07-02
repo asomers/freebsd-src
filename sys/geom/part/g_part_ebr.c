@@ -80,6 +80,8 @@ static int g_part_ebr_destroy(struct g_part_table *, struct g_part_parms *);
 static void g_part_ebr_dumpconf(struct g_part_table *, struct g_part_entry *,
     struct sbuf *, const char *);
 static int g_part_ebr_dumpto(struct g_part_table *, struct g_part_entry *);
+static int g_part_ebr_getmdrange(struct g_part_table *, struct g_provider *,
+    int, quad_t *, quad_t *);
 static int g_part_ebr_modify(struct g_part_table *, struct g_part_entry *,
     struct g_part_parms *);
 static const char *g_part_ebr_name(struct g_part_table *, struct g_part_entry *,
@@ -105,6 +107,7 @@ static kobj_method_t g_part_ebr_methods[] = {
 	KOBJMETHOD(g_part_destroy,	g_part_ebr_destroy),
 	KOBJMETHOD(g_part_dumpconf,	g_part_ebr_dumpconf),
 	KOBJMETHOD(g_part_dumpto,	g_part_ebr_dumpto),
+	KOBJMETHOD(g_part_getmdrange,	g_part_ebr_getmdrange),
 	KOBJMETHOD(g_part_modify,	g_part_ebr_modify),
 	KOBJMETHOD(g_part_name,		g_part_ebr_name),
 	KOBJMETHOD(g_part_new_provider,	g_part_ebr_new_provider),
@@ -389,6 +392,32 @@ g_part_ebr_dumpto(struct g_part_table *table, struct g_part_entry *baseentry)
 	entry = (struct g_part_ebr_entry *)baseentry;
 	return ((entry->ent.dp_typ == DOSPTYP_386BSD ||
 	    entry->ent.dp_typ == DOSPTYP_LINSWP) ? 1 : 0);
+}
+
+static int
+g_part_ebr_getmdrange(struct g_part_table *basetable,
+    struct g_provider *pp __unused, int idx, quad_t *start, quad_t *length)
+{
+	struct g_part_entry *baseentry;
+	int i;
+
+	/* An EBR sector at LBA 0, plus one at the start of each partition. */
+	if (idx == 0) {
+		*start = 0;
+		*length = 1;
+		return (0);
+	}
+	i = 1;
+	LIST_FOREACH(baseentry, &basetable->gpt_entry, gpe_entry) {
+		if (baseentry->gpe_deleted)
+			continue;
+		if (i++ != idx)
+			continue;
+		*start = baseentry->gpe_start;
+		*length = 1;
+		return (0);
+	}
+	return (ENOENT);
 }
 
 static int

@@ -71,6 +71,8 @@ static int g_part_bsd_destroy(struct g_part_table *, struct g_part_parms *);
 static void g_part_bsd_dumpconf(struct g_part_table *, struct g_part_entry *,
     struct sbuf *, const char *);
 static int g_part_bsd_dumpto(struct g_part_table *, struct g_part_entry *);
+static int g_part_bsd_getmdrange(struct g_part_table *, struct g_provider *,
+    int, quad_t *, quad_t *);
 static int g_part_bsd_modify(struct g_part_table *, struct g_part_entry *,
     struct g_part_parms *);
 static const char *g_part_bsd_name(struct g_part_table *, struct g_part_entry *,
@@ -90,6 +92,7 @@ static kobj_method_t g_part_bsd_methods[] = {
 	KOBJMETHOD(g_part_destroy,	g_part_bsd_destroy),
 	KOBJMETHOD(g_part_dumpconf,	g_part_bsd_dumpconf),
 	KOBJMETHOD(g_part_dumpto,	g_part_bsd_dumpto),
+	KOBJMETHOD(g_part_getmdrange,	g_part_bsd_getmdrange),
 	KOBJMETHOD(g_part_modify,	g_part_bsd_modify),
 	KOBJMETHOD(g_part_resize,	g_part_bsd_resize),
 	KOBJMETHOD(g_part_name,		g_part_bsd_name),
@@ -283,6 +286,19 @@ g_part_bsd_dumpto(struct g_part_table *table, struct g_part_entry *baseentry)
 	entry = (struct g_part_bsd_entry *)baseentry;
 	return ((entry->part.p_fstype == FS_UNUSED ||
 	    entry->part.p_fstype == FS_SWAP) ? 1 : 0);
+}
+
+static int
+g_part_bsd_getmdrange(struct g_part_table *basetable __unused,
+    struct g_provider *pp, int idx, quad_t *start, quad_t *length)
+{
+
+	/* The boot area, which contains the label, overlaps partitions. */
+	if (idx != 0)
+		return (ENOENT);
+	*start = 0;
+	*length = howmany(BBSIZE, pp->sectorsize);
+	return (0);
 }
 
 static int

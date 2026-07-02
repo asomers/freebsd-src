@@ -935,18 +935,19 @@ g_part_zoned_check_range(struct g_consumer *cp, uint64_t start,
 /*
  * A host-managed zoned provider only accepts random writes within its
  * conventional zones, while partition metadata is rewritten in place. Verify
- * that the sectors outside the allocatable range -- where the scheme keeps
- * its tables -- and the head/tail sectors scrubbed at commit time all fall
- * in conventional zones. Non-zoned, drive-managed and host-aware providers
- * accept random writes everywhere and pass trivially.
+ * that the metadata ranges reported by the scheme, as well as the head/tail
+ * sectors scrubbed at commit time, all fall in conventional zones. Non-zoned,
+ * drive-managed and host-aware providers accept random writes everywhere and
+ * pass trivially.
  */
 static int
 g_part_zoned_check(struct g_consumer *cp, struct g_part_table *table)
 {
 	struct disk_zone_args zar;
 	struct g_provider *pp;
-	uint64_t headsecs, last, tailsecs;
-	int error;
+	quad_t length, start;
+	uint64_t nsecs;
+	int error, idx;
 
 	bzero(&zar, sizeof(zar));
 	zar.zone_cmd = DISK_ZONE_GET_PARAMS;
@@ -958,22 +959,33 @@ g_part_zoned_check(struct g_consumer *cp, struct g_part_table *table)
 		return (0);
 
 	pp = cp->provider;
-	last = pp->mediasize / pp->sectorsize - 1;
-	if (table->gpt_scheme != &g_part_null_scheme) {
-		headsecs = table->gpt_first;
-		tailsecs = last - table->gpt_last;
-	} else
-		headsecs = tailsecs = 0;
-	if (table->gpt_smhead != 0)
-		headsecs = MAX(headsecs, (uint64_t)fls(table->gpt_smhead));
-	if (table->gpt_smtail != 0)
-		tailsecs = MAX(tailsecs, (uint64_t)fls(table->gpt_smtail));
+	nsecs = pp->mediasize / pp->sectorsize;
 
-	error = g_part_zoned_check_range(cp, 0, headsecs);
-	if (error == 0)
-		error = g_part_zoned_check_range(cp, last + 1 - tailsecs,
-		    tailsecs);
-	return (error);
+	/* The sectors scrubbed after a scheme is destroyed. */
+	if (table->gpt_smhead != 0) {
+		error = g_part_zoned_check_range(cp, 0,
+		    fls(table->gpt_smhead));
+		if (error != 0)
+			return (error);
+	}
+	if (table->gpt_smtail != 0) {
+		error = g_part_zoned_check_range(cp,
+		    nsecs - fls(table->gpt_smtail), fls(table->gpt_smtail));
+		if (error != 0)
+			return (error);
+	}
+
+	/* The ranges in which the scheme keeps its metadata. */
+	for (idx = 0;; idx++) {
+		error = G_PART_GETMDRANGE(table, pp, idx, &start, &length);
+		if (error == ENOENT)
+			return (0);
+		if (error != 0)
+			return (error);
+		error = g_part_zoned_check_range(cp, start, length);
+		if (error != 0)
+			return (error);
+	}
 }
 
 static int
