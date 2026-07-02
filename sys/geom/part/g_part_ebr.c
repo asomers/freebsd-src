@@ -81,7 +81,7 @@ static void g_part_ebr_dumpconf(struct g_part_table *, struct g_part_entry *,
     struct sbuf *, const char *);
 static int g_part_ebr_dumpto(struct g_part_table *, struct g_part_entry *);
 static int g_part_ebr_getmdrange(struct g_part_table *, struct g_provider *,
-    int, quad_t *, quad_t *);
+    int, quad_t *, quad_t *, int *);
 static int g_part_ebr_modify(struct g_part_table *, struct g_part_entry *,
     struct g_part_parms *);
 static const char *g_part_ebr_name(struct g_part_table *, struct g_part_entry *,
@@ -396,7 +396,8 @@ g_part_ebr_dumpto(struct g_part_table *table, struct g_part_entry *baseentry)
 
 static int
 g_part_ebr_getmdrange(struct g_part_table *basetable,
-    struct g_provider *pp __unused, int idx, quad_t *start, quad_t *length)
+    struct g_provider *pp __unused, int idx, quad_t *start, quad_t *length,
+    int *flags)
 {
 	struct g_part_entry *baseentry;
 	int i;
@@ -405,6 +406,7 @@ g_part_ebr_getmdrange(struct g_part_table *basetable,
 	if (idx == 0) {
 		*start = 0;
 		*length = 1;
+		*flags = G_PART_MDR_SEQWRITE;
 		return (0);
 	}
 	i = 1;
@@ -415,6 +417,11 @@ g_part_ebr_getmdrange(struct g_part_table *basetable,
 			continue;
 		*start = baseentry->gpe_start;
 		*length = 1;
+		/*
+		 * Scattered through the slice; only writable in place, so no
+		 * G_PART_MDR_SEQWRITE.
+		 */
+		*flags = 0;
 		return (0);
 	}
 	return (ENOENT);

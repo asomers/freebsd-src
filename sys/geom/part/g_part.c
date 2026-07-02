@@ -38,6 +38,7 @@
 #include <sys/mutex.h>
 #include <sys/queue.h>
 #include <sys/sbuf.h>
+#include <sys/stdarg.h>
 #include <sys/sysctl.h>
 #include <sys/systm.h>
 #include <sys/uuid.h>
@@ -154,6 +155,11 @@ static u_int allow_nesting = 0;
 SYSCTL_UINT(_kern_geom_part, OID_AUTO, allow_nesting,
     CTLFLAG_RWTUN, &allow_nesting, 0,
     "Allow additional levels of nesting");
+static u_int allow_zoned_workarounds = 0;
+SYSCTL_UINT(_kern_geom_part, OID_AUTO, allow_zoned_workarounds,
+    CTLFLAG_RWTUN, &allow_zoned_workarounds, 0,
+    "Allow writing partition metadata into sequential zones and omitting "
+    "backup metadata on host-managed zoned providers");
 char g_part_separator[MAXPATHLEN] = "";
 SYSCTL_STRING(_kern_geom_part, OID_AUTO, separator,
     CTLFLAG_RDTUN, &g_part_separator, sizeof(g_part_separator),
@@ -876,24 +882,72 @@ g_part_ctl_bootcode(struct gctl_req *req, struct g_part_parms *gpp)
 }
 
 /*
- * Check that every zone overlapping the sector range [start, start + length)
- * is a conventional (randomly writable) zone. Returns 0 if so, EOPNOTSUPP if
- * a sequential-write-required zone is found and any other errno if the zone
- * report itself failed.
+ * Append a message to the request's "output" parameter, if the caller
+ * provided one, so it reaches the user's terminal on an otherwise
+ * successful command.
+ */
+static void
+g_part_ctl_output(struct gctl_req *req, const char *fmt, ...)
+{
+	va_list ap;
+	struct sbuf *sb;
+	char *buf;
+	int len;
+
+	buf = gctl_get_param_flags(req, "output", GCTL_PARAM_WR, &len);
+	if (buf == NULL || len < 1)
+		return;
+	buf[len - 1] = '\0';
+	sb = sbuf_new_auto();
+	sbuf_cat(sb, buf);
+	va_start(ap, fmt);
+	sbuf_vprintf(sb, fmt, ap);
+	va_end(ap);
+	sbuf_finish(sb);
+	if (sbuf_len(sb) < len) {
+		gctl_set_param(req, "output", sbuf_data(sb),
+		    sbuf_len(sb) + 1);
+	} else {
+		/* Truncate to the caller's buffer, NUL included. */
+		sbuf_data(sb)[len - 1] = '\0';
+		gctl_set_param(req, "output", sbuf_data(sb), len);
+	}
+	sbuf_delete(sb);
+}
+
+/*
+ * Classification of the zones backing a metadata range.
+ */
+#define	G_PART_ZONED_CONV	0	/* All conventional: random writes. */
+#define	G_PART_ZONED_SEQ	1	/* Sequential zones, writable in one
+					   ascending pass from the range
+					   start, possibly after resetting
+					   the zones noted in resets[]. */
+#define	G_PART_ZONED_BLOCKED	2	/* Not writable. */
+
+/*
+ * Classify the zones overlapping the sector range [start, start + length).
+ * Sequential zones qualify for G_PART_ZONED_SEQ only when nothing is
+ * recorded beyond the range end (the write pointer does not point past it),
+ * as everything the rewriting pass skips is lost when the zone is reset;
+ * zones whose write pointer has advanced at all are appended to resets[].
+ * Returns an errno only when the zone report itself fails.
  */
 static int
-g_part_zoned_check_range(struct g_consumer *cp, uint64_t start,
-    uint64_t length)
+g_part_zoned_classify(struct g_consumer *cp, quad_t start, quad_t length,
+    int *state, uint64_t *resets, u_int maxresets, u_int *nresets)
 {
 	struct disk_zone_args zar;
-	struct disk_zone_rep_entry *entries;
+	struct disk_zone_rep_entry *entries, *z;
 	struct disk_zone_report *rep;
 	uint64_t end, lba;
 	uint32_t i;
 	int error;
 	const uint32_t nent = 16;
 
-	if (length == 0)
+	*state = G_PART_ZONED_CONV;
+	*nresets = 0;
+	if (length <= 0)
 		return (0);
 
 	entries = g_malloc(nent * sizeof(*entries), M_WAITOK | M_ZERO);
@@ -917,37 +971,79 @@ g_part_zoned_check_range(struct g_consumer *cp, uint64_t start,
 			break;
 		}
 		for (i = 0; i < rep->entries_filled && lba < end; i++) {
-			if (entries[i].zone_type !=
-			    DISK_ZONE_TYPE_CONVENTIONAL) {
-				error = EOPNOTSUPP;
-				break;
+			z = &entries[i];
+			if (z->zone_type != DISK_ZONE_TYPE_CONVENTIONAL) {
+				if (*state == G_PART_ZONED_CONV)
+					*state = G_PART_ZONED_SEQ;
+				if (z->write_pointer_lba > end ||
+				    z->zone_condition ==
+				    DISK_ZONE_COND_READONLY ||
+				    z->zone_condition ==
+				    DISK_ZONE_COND_OFFLINE) {
+					*state = G_PART_ZONED_BLOCKED;
+					goto done;
+				}
+				if (z->write_pointer_lba > z->zone_start_lba) {
+					if (*nresets == maxresets) {
+						*state = G_PART_ZONED_BLOCKED;
+						goto done;
+					}
+					resets[(*nresets)++] =
+					    z->zone_start_lba;
+				}
 			}
-			lba = entries[i].zone_start_lba +
-			    entries[i].zone_length;
+			/* Guard against a report that fails to advance. */
+			if (z->zone_start_lba + z->zone_length <= lba) {
+				error = ENXIO;
+				goto done;
+			}
+			lba = z->zone_start_lba + z->zone_length;
 		}
-		if (error != 0)
-			break;
 	}
+done:
 	g_free(entries);
 	return (error);
 }
 
 /*
- * A host-managed zoned provider only accepts random writes within its
- * conventional zones, while partition metadata is rewritten in place. Verify
- * that the metadata ranges reported by the scheme, as well as the head/tail
- * sectors scrubbed at commit time, all fall in conventional zones. Non-zoned,
- * drive-managed and host-aware providers accept random writes everywhere and
- * pass trivially.
+ * On host-managed zoned providers partition metadata cannot generally be
+ * rewritten in place. Establish how (and whether) each metadata range can be
+ * written before anything is committed:
+ *
+ *  - Ranges in conventional (randomly writable) zones need no special care.
+ *  - A range flagged G_PART_MDR_SEQWRITE is written in one strictly
+ *    ascending pass from LBA 0, so it may live in sequential zones: those
+ *    zones are reset and the metadata rewritten from the start. Such a zone
+ *    must hold nothing beyond the metadata itself, or the reset would eat
+ *    into other data.
+ *  - A range flagged G_PART_MDR_OPTIONAL (e.g. the backup GPT) is skipped
+ *    when its zones cannot be written; the scheme is told through
+ *    gpt_primary_only. Other consumers of the scheme may consider such a
+ *    table damaged.
+ *
+ * Anything else is refused before a single sector is written. Scrub sectors
+ * in non-conventional zones are dropped from the scrub maps: either the
+ * zone reset wipes them anyway, or they cannot be written at all.
+ *
+ * Both workarounds leave a table other consumers may reject and that
+ * "gpart destroy" cannot scrub, so they must be opted into with the
+ * kern.geom.part.allow_zoned_workarounds sysctl.
  */
 static int
-g_part_zoned_check(struct g_consumer *cp, struct g_part_table *table)
+g_part_zoned_prepare(struct gctl_req *req, struct g_consumer *cp,
+    struct g_part_table *table)
 {
+	uint64_t resets[8];
 	struct disk_zone_args zar;
 	struct g_provider *pp;
 	quad_t length, start;
 	uint64_t nsecs;
-	int error, idx;
+	u_int i, n, nresets;
+	int error, flags, idx, state;
+	bool pri_only, seq;
+
+	table->gpt_primary_only = 0;
+	table->gpt_zone_seq = 0;
 
 	bzero(&zar, sizeof(zar));
 	zar.zone_cmd = DISK_ZONE_GET_PARAMS;
@@ -960,32 +1056,97 @@ g_part_zoned_check(struct g_consumer *cp, struct g_part_table *table)
 
 	pp = cp->provider;
 	nsecs = pp->mediasize / pp->sectorsize;
-
-	/* The sectors scrubbed after a scheme is destroyed. */
-	if (table->gpt_smhead != 0) {
-		error = g_part_zoned_check_range(cp, 0,
-		    fls(table->gpt_smhead));
-		if (error != 0)
-			return (error);
-	}
-	if (table->gpt_smtail != 0) {
-		error = g_part_zoned_check_range(cp,
-		    nsecs - fls(table->gpt_smtail), fls(table->gpt_smtail));
-		if (error != 0)
-			return (error);
-	}
+	nresets = 0;
+	pri_only = false;
+	seq = false;
 
 	/* The ranges in which the scheme keeps its metadata. */
 	for (idx = 0;; idx++) {
-		error = G_PART_GETMDRANGE(table, pp, idx, &start, &length);
+		error = G_PART_GETMDRANGE(table, pp, idx, &start, &length,
+		    &flags);
 		if (error == ENOENT)
-			return (0);
+			break;
 		if (error != 0)
 			return (error);
-		error = g_part_zoned_check_range(cp, start, length);
+		error = g_part_zoned_classify(cp, start, length, &state,
+		    resets + nresets, nitems(resets) - nresets, &n);
+		if (error != 0)
+			return (error);
+		if (state == G_PART_ZONED_CONV)
+			continue;
+		if (state == G_PART_ZONED_SEQ &&
+		    (flags & G_PART_MDR_SEQWRITE) != 0) {
+			nresets += n;
+			seq = true;
+			continue;
+		}
+		if ((flags & G_PART_MDR_OPTIONAL) != 0) {
+			pri_only = true;
+			continue;
+		}
+		return (EOPNOTSUPP);
+	}
+
+	if ((seq || pri_only) && allow_zoned_workarounds == 0) {
+		gctl_error(req, "%d %s: the table cannot be written without "
+		    "zoned workarounds (metadata in sequential zones and/or "
+		    "an omitted backup table); set "
+		    "kern.geom.part.allow_zoned_workarounds=1 to allow this "
+		    "at your own risk", EOPNOTSUPP, pp->name);
+		return (EOPNOTSUPP);
+	}
+
+	/*
+	 * Old-metadata scrubbing only works in conventional zones; sectors
+	 * in sequential zones can stay, as they either get wiped by the zone
+	 * resets below or were never written in the first place.
+	 */
+	if (table->gpt_smhead != 0) {
+		error = g_part_zoned_classify(cp, 0, fls(table->gpt_smhead),
+		    &state, NULL, 0, &n);
+		if (error != 0)
+			return (error);
+		if (state != G_PART_ZONED_CONV) {
+			/* Zone resets from a table rewrite wipe it anyway. */
+			if (nresets == 0) {
+				printf("GEOM_PART: %s: old metadata in "
+				    "sequential zones was not scrubbed\n",
+				    pp->name);
+				g_part_ctl_output(req, "WARNING: %s: old "
+				    "metadata in sequential zones was not "
+				    "scrubbed; reset the zones to erase it\n",
+				    pp->name);
+			}
+			table->gpt_smhead = 0;
+		}
+	}
+	if (table->gpt_smtail != 0) {
+		error = g_part_zoned_classify(cp,
+		    nsecs - fls(table->gpt_smtail), fls(table->gpt_smtail),
+		    &state, NULL, 0, &n);
+		if (error != 0)
+			return (error);
+		if (state != G_PART_ZONED_CONV)
+			table->gpt_smtail = 0;
+	}
+
+	/* All ranges check out; reset the zones to be rewritten. */
+	for (i = 0; i < nresets; i++) {
+		bzero(&zar, sizeof(zar));
+		zar.zone_cmd = DISK_ZONE_RWP;
+		zar.zone_params.rwp.id = resets[i];
+		error = g_io_zonecmd(&zar, cp);
 		if (error != 0)
 			return (error);
 	}
+
+	if (pri_only)
+		printf("GEOM_PART: %s: not writing backup metadata: its "
+		    "location is not randomly writable; other tools may "
+		    "report the table as damaged\n", pp->name);
+	table->gpt_primary_only = pri_only;
+	table->gpt_zone_seq = seq;
+	return (0);
 }
 
 static int
@@ -1014,14 +1175,14 @@ g_part_ctl_commit(struct gctl_req *req, struct g_part_parms *gpp)
 	cp = LIST_FIRST(&gp->consumer);
 
 	/*
-	 * Refuse to write the table if any of it would land in a zone that
-	 * does not accept random writes.
+	 * Work out how the table can be written if the provider is zoned,
+	 * and refuse if it cannot be.
 	 */
-	error = g_part_zoned_check(cp, table);
+	error = g_part_zoned_prepare(req, cp, table);
 	if (error != 0) {
 		g_topology_lock();
-		gctl_error(req, "%d table location is not randomly writable "
-		    "on zoned provider %s", error, cp->provider->name);
+		gctl_error(req, "%d table location is not writable on zoned "
+		    "provider %s", error, cp->provider->name);
 		return (error);
 	}
 
@@ -1061,6 +1222,16 @@ g_part_ctl_commit(struct gctl_req *req, struct g_part_parms *gpp)
 	error = G_PART_WRITE(table, cp);
 	if (error)
 		goto fail;
+
+	/* Tell the user which zoned workarounds the table now relies on. */
+	if (table->gpt_zone_seq)
+		g_part_ctl_output(req, "WARNING: %s: table written into "
+		    "sequential zone(s); \"gpart destroy\" cannot scrub it, "
+		    "only a zone reset erases it\n", cp->provider->name);
+	if (table->gpt_primary_only)
+		g_part_ctl_output(req, "WARNING: %s: backup table omitted "
+		    "(its location is not randomly writable); other tools "
+		    "may report the table as damaged\n", cp->provider->name);
 
 	LIST_FOREACH_SAFE(entry, &table->gpt_entry, gpe_entry, tmp) {
 		if (!entry->gpe_deleted) {

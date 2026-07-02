@@ -178,7 +178,24 @@ struct g_part_table {
 	bool		gpt_opened:1;	/* Permissions obtained. */
 	bool		gpt_fixgeom:1;	/* Geometry is fixed. */
 	bool		gpt_corrupt:1;	/* Table is corrupt. */
+	/*
+	 * Zoned-provider write policy, established before each commit.
+	 * gpt_primary_only tells the scheme to skip metadata it marked
+	 * G_PART_MDR_OPTIONAL (e.g. the backup GPT); gpt_zone_seq tells it
+	 * that the primary metadata lies in sequential-write-required zones
+	 * and must be written in strictly ascending LBA order.
+	 */
+	bool		gpt_primary_only:1;
+	bool		gpt_zone_seq:1;
 };
+
+/*
+ * Metadata-range properties returned by G_PART_GETMDRANGE().
+ */
+#define	G_PART_MDR_SEQWRITE	0x1	/* Written in one strictly ascending
+					   pass from the range start, which
+					   sits on a zone boundary. */
+#define	G_PART_MDR_OPTIONAL	0x2	/* May be skipped when unwritable. */
 
 struct g_part_entry *g_part_new_entry(struct g_part_table *, int, quad_t,
     quad_t);

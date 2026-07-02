@@ -1304,6 +1304,20 @@ further nested partitioning.
 This variable overrides this restriction and allows arbitrary nesting (except
 within partitions created at offset 0).
 Some schemes have their own separate checks, for which see below.
+.It Va kern.geom.part.allow_zoned_workarounds : No 0
+By default a partition table is only written to a host-managed zoned
+provider when all of its metadata lands in conventional (randomly
+writable) zones.
+Setting this variable to 1 additionally allows metadata that is written
+front to back (e.g., a primary GPT) to be placed in sequential zones, and
+allows backup metadata (e.g., the backup GPT at the end of the provider)
+to be omitted when its location cannot be written.
+Every table update resets the sequential zones holding metadata before
+rewriting them, so partitions must not share a zone with the table.
+Such tables cannot be scrubbed by
+.Cm gpart destroy
+and can only be erased by resetting the zones; other tools and operating
+systems may report them as damaged.
 .It Va kern.geom.part.auto_resize : No 1
 This variable controls automatic resize behavior of the
 .Nm PART

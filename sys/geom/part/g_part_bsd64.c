@@ -126,7 +126,7 @@ static void g_part_bsd64_dumpconf(struct g_part_table *, struct g_part_entry *,
     struct sbuf *, const char *);
 static int g_part_bsd64_dumpto(struct g_part_table *, struct g_part_entry *);
 static int g_part_bsd64_getmdrange(struct g_part_table *, struct g_provider *,
-    int, quad_t *, quad_t *);
+    int, quad_t *, quad_t *, int *);
 static int g_part_bsd64_modify(struct g_part_table *, struct g_part_entry *,
     struct g_part_parms *);
 static const char *g_part_bsd64_name(struct g_part_table *, struct g_part_entry *,
@@ -427,7 +427,7 @@ g_part_bsd64_dumpto(struct g_part_table *table, struct g_part_entry *baseentry)
 
 static int
 g_part_bsd64_getmdrange(struct g_part_table *basetable, struct g_provider *pp,
-    int idx, quad_t *start, quad_t *length)
+    int idx, quad_t *start, quad_t *length, int *flags)
 {
 
 	if (idx != 0)
@@ -439,6 +439,7 @@ g_part_bsd64_getmdrange(struct g_part_table *basetable, struct g_provider *pp,
 	 */
 	*length = MAX(basetable->gpt_first,
 	    (quad_t)howmany(sizeof(struct disklabel64), pp->sectorsize));
+	*flags = G_PART_MDR_SEQWRITE;
 	return (0);
 }
 

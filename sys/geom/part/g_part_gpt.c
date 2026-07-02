@@ -28,6 +28,7 @@
 
 #include <sys/param.h>
 #include <sys/bio.h>
+#include <sys/disk_zone.h>
 #include <sys/diskmbr.h>
 #include <sys/gsb_crc32.h>
 #include <sys/endian.h>
@@ -114,7 +115,7 @@ static void g_part_gpt_dumpconf(struct g_part_table *, struct g_part_entry *,
     struct sbuf *, const char *);
 static int g_part_gpt_dumpto(struct g_part_table *, struct g_part_entry *);
 static int g_part_gpt_getmdrange(struct g_part_table *, struct g_provider *,
-    int, quad_t *, quad_t *);
+    int, quad_t *, quad_t *, int *);
 static int g_part_gpt_modify(struct g_part_table *, struct g_part_entry *,
     struct g_part_parms *);
 static const char *g_part_gpt_name(struct g_part_table *, struct g_part_entry *,
@@ -815,7 +816,7 @@ g_part_gpt_dumpto(struct g_part_table *table, struct g_part_entry *baseentry)
 
 static int
 g_part_gpt_getmdrange(struct g_part_table *basetable, struct g_provider *pp,
-    int idx, quad_t *start, quad_t *length)
+    int idx, quad_t *start, quad_t *length, int *flags)
 {
 
 	switch (idx) {
@@ -823,12 +824,14 @@ g_part_gpt_getmdrange(struct g_part_table *basetable, struct g_provider *pp,
 		/* PMBR, primary header and primary table. */
 		*start = 0;
 		*length = basetable->gpt_first;
+		*flags = G_PART_MDR_SEQWRITE;
 		return (0);
 	case 1:
 		/* Backup table and backup header. */
 		*start = basetable->gpt_last + 1;
 		*length = pp->mediasize / pp->sectorsize -
 		    (basetable->gpt_last + 1);
+		*flags = G_PART_MDR_OPTIONAL;
 		return (0);
 	default:
 		return (ENOENT);
@@ -953,6 +956,39 @@ g_part_gpt_probe(struct g_part_table *table, struct g_consumer *cp)
 	return ((res == 0) ? pri : ENXIO);
 }
 
+/*
+ * True when the secondary GPT location cannot be randomly written because it
+ * lies in a sequential zone of a host-managed zoned provider, in which case
+ * a primary-only GPT is the best a writer could have done and the table
+ * should not be treated as damaged.
+ */
+static bool
+gpt_seczone_unwritable(struct g_consumer *cp, uint64_t last)
+{
+	struct disk_zone_args zar;
+	struct disk_zone_rep_entry entry;
+
+	bzero(&zar, sizeof(zar));
+	zar.zone_cmd = DISK_ZONE_GET_PARAMS;
+	if (g_io_zonecmd(&zar, cp) != 0)
+		return (false);
+	if (zar.zone_params.disk_params.zone_mode !=
+	    DISK_ZONE_MODE_HOST_MANAGED)
+		return (false);
+
+	bzero(&zar, sizeof(zar));
+	bzero(&entry, sizeof(entry));
+	zar.zone_cmd = DISK_ZONE_REPORT_ZONES;
+	zar.zone_params.report.starting_id = last;
+	zar.zone_params.report.rep_options = DISK_ZONE_REP_ALL;
+	zar.zone_params.report.entries_allocated = 1;
+	zar.zone_params.report.entries = &entry;
+	if (g_io_zonecmd(&zar, cp) != 0 ||
+	    zar.zone_params.report.entries_filled != 1)
+		return (false);
+	return (entry.zone_type != DISK_ZONE_TYPE_CONVENTIONAL);
+}
+
 static int
 g_part_gpt_read(struct g_part_table *basetable, struct g_consumer *cp)
 {
@@ -1056,11 +1092,17 @@ g_part_gpt_read(struct g_part_table *basetable, struct g_consumer *cp)
 		g_free(pritbl);
 	} else {
 		if (table->state[GPT_ELT_SECTBL] != GPT_STATE_OK) {
-			printf("GEOM: %s: the secondary GPT table is corrupt "
-			    "or invalid.\n", pp->name);
-			printf("GEOM: %s: using the primary only -- recovery "
-			    "suggested.\n", pp->name);
-			basetable->gpt_corrupt = 1;
+			if (gpt_seczone_unwritable(cp, last)) {
+				printf("GEOM: %s: no secondary GPT: its "
+				    "location is not randomly writable on "
+				    "this zoned provider.\n", pp->name);
+			} else {
+				printf("GEOM: %s: the secondary GPT table is "
+				    "corrupt or invalid.\n", pp->name);
+				printf("GEOM: %s: using the primary only -- "
+				    "recovery suggested.\n", pp->name);
+				basetable->gpt_corrupt = 1;
+			}
 		} else if (table->lba[GPT_ELT_SECHDR] != last) {
 			printf( "GEOM: %s: the secondary GPT header is not in "
 			    "the last LBA.\n", pp->name);
@@ -1237,6 +1279,25 @@ g_part_gpt_type(struct g_part_table *basetable, struct g_part_entry *baseentry,
 }
 
 static int
+gpt_write_tbl(struct g_consumer *cp, u_char *buf, uint64_t tbllba,
+    size_t tblsz)
+{
+	struct g_provider *pp;
+	int error, index;
+
+	pp = cp->provider;
+	for (index = 0; index < tblsz; index += maxphys / pp->sectorsize) {
+		error = g_write_data(cp, (tbllba + index) * pp->sectorsize,
+		    buf + (index + 1) * pp->sectorsize,
+		    (tblsz - index > maxphys / pp->sectorsize) ? maxphys :
+		    (tblsz - index) * pp->sectorsize);
+		if (error != 0)
+			return (error);
+	}
+	return (0);
+}
+
+static int
 g_part_gpt_write(struct g_part_table *basetable, struct g_consumer *cp)
 {
 	unsigned char *buf, *bp;
@@ -1296,7 +1357,12 @@ g_part_gpt_write(struct g_part_table *basetable, struct g_consumer *cp)
 	    table->hdr->hdr_entries * table->hdr->hdr_entsz);
 	le32enc(buf + 88, crc);
 
-	/* Write primary meta-data. */
+	/*
+	 * Write primary meta-data. Normally the header goes down after the
+	 * table, so that a valid header never points at a torn table. In
+	 * sequential zones writes must arrive in ascending LBA order, so
+	 * there the header (which precedes the table on disk) goes first.
+	 */
 	le32enc(buf + 16, 0);	/* hdr_crc_self. */
 	le64enc(buf + 24, table->lba[GPT_ELT_PRIHDR]);	/* hdr_lba_self. */
 	le64enc(buf + 32, table->lba[GPT_ELT_SECHDR]);	/* hdr_lba_alt. */
@@ -1304,18 +1370,30 @@ g_part_gpt_write(struct g_part_table *basetable, struct g_consumer *cp)
 	crc = crc32(buf, table->hdr->hdr_size);
 	le32enc(buf + 16, crc);
 
-	for (index = 0; index < tblsz; index += maxphys / pp->sectorsize) {
+	if (basetable->gpt_zone_seq) {
 		error = g_write_data(cp,
-		    (table->lba[GPT_ELT_PRITBL] + index) * pp->sectorsize,
-		    buf + (index + 1) * pp->sectorsize,
-		    (tblsz - index > maxphys / pp->sectorsize) ? maxphys :
-		    (tblsz - index) * pp->sectorsize);
+		    table->lba[GPT_ELT_PRIHDR] * pp->sectorsize,
+		    buf, pp->sectorsize);
+		if (error)
+			goto out;
+		error = gpt_write_tbl(cp, buf, table->lba[GPT_ELT_PRITBL],
+		    tblsz);
+		if (error)
+			goto out;
+	} else {
+		error = gpt_write_tbl(cp, buf, table->lba[GPT_ELT_PRITBL],
+		    tblsz);
+		if (error)
+			goto out;
+		error = g_write_data(cp,
+		    table->lba[GPT_ELT_PRIHDR] * pp->sectorsize,
+		    buf, pp->sectorsize);
 		if (error)
 			goto out;
 	}
-	error = g_write_data(cp, table->lba[GPT_ELT_PRIHDR] * pp->sectorsize,
-	    buf, pp->sectorsize);
-	if (error)
+
+	/* Skip the secondary if its location cannot be written. */
+	if (basetable->gpt_primary_only)
 		goto out;
 
 	/* Write secondary meta-data. */
@@ -1326,15 +1404,9 @@ g_part_gpt_write(struct g_part_table *basetable, struct g_consumer *cp)
 	crc = crc32(buf, table->hdr->hdr_size);
 	le32enc(buf + 16, crc);
 
-	for (index = 0; index < tblsz; index += maxphys / pp->sectorsize) {
-		error = g_write_data(cp,
-		    (table->lba[GPT_ELT_SECTBL] + index) * pp->sectorsize,
-		    buf + (index + 1) * pp->sectorsize,
-		    (tblsz - index > maxphys / pp->sectorsize) ? maxphys :
-		    (tblsz - index) * pp->sectorsize);
-		if (error)
-			goto out;
-	}
+	error = gpt_write_tbl(cp, buf, table->lba[GPT_ELT_SECTBL], tblsz);
+	if (error)
+		goto out;
 	error = g_write_data(cp, table->lba[GPT_ELT_SECHDR] * pp->sectorsize,
 	    buf, pp->sectorsize);
 
