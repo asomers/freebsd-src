@@ -45,7 +45,7 @@ _PKG_WORLDSTAGE=	${OBJTOP}/worldstage
 .endif
 
 _PKGDIR=	${SRCTOP}/packages
-_STAGEDIR=	${REPODIR}/${PKG_ABI}/${PKG_VERSION}
+_STAGEDIR=	${REPODIR}/${PKG_ABI}/${PKG_VERSION}.tmp
 
 # These are the default UCL variables we pass to generate-ucl.lua.
 # Allow the caller to add additional variables via PKG_UCLVARS.

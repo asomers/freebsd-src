@@ -2049,8 +2049,9 @@ PKG_CLEVEL?=	${"${PKG_FORMAT:Mtar}" != "":?:-l ${PKG_LEVEL}}
 PKG_CTHREADS?=	0
 PKG_REPO_SIGNING_KEY?=	# empty
 PKG_OUTPUT_DIR?=	${PKG_VERSION}
+PKG_OUTPUT_TMPDIR?=	${PKG_VERSION}.tmp
 PKG_ABI_FILE?=	${WSTAGEDIR}/usr/bin/uname
-.if make(create-*-packages*) || make(real-update-packages) || make(real-sign-packages)
+.if make(create-*-packages*) || make(real-update-packages) || make(real-packages) || make(real-sign-packages)
 PKG_ABI!=	${PKG_CMD} -o ABI_FILE=${PKG_ABI_FILE} config ABI
 .endif
 
@@ -2058,7 +2059,8 @@ PKG_ABI!=	${PKG_CMD} -o ABI_FILE=${PKG_ABI_FILE} config ABI
 .ORDER:		create-packages create-world-packages
 .ORDER:		create-packages create-source-packages
 .ORDER:		create-packages create-kernel-packages
-.ORDER:		create-packages sign-packages
+.ORDER:		create-packages move-packages
+.ORDER:		move-packages sign-packages
 
 _pkgbootstrap: .PHONY
 .if make(*package*) && !exists(${LOCALBASE}/sbin/pkg)
@@ -2079,7 +2081,8 @@ PKG_EXT=	pkg
 
 .if !defined(PKG_VERSION_FROM) && make(real-update-packages) && \
     exists(${PKG_ABI_FILE}) && exists(${REPODIR}/${PKG_ABI}/latest)
-PKG_VERSION_FROM!=/usr/bin/readlink ${REPODIR}/${PKG_ABI}/latest
+PKG_VERSION_FROM_UNSTRIPPED!=/usr/bin/readlink ${REPODIR}/${PKG_ABI}/latest
+PKG_VERSION_FROM=${PKG_VERSION_FROM_UNSTRIPPED:S/\/$//}
 PKG_VERSION_FROM_DIR=	${REPODIR}/${PKG_ABI}/${PKG_VERSION_FROM}
 # Determine the name of the branch base on the version
 # X.bY => beta
@@ -2124,33 +2127,53 @@ package-pkg: _pkgbootstrap _repodir .PHONY
 .endif
 .endif
 
-real-packages:	stage-packages create-packages sign-packages .PHONY
+real-packages:	stage-packages create-packages move-packages sign-packages .PHONY
 
 real-update-packages: stage-packages .PHONY
 	${_+_}${MAKE} -C ${.CURDIR} PKG_VERSION=${PKG_VERSION} create-packages
+	@mkdir -p ${REPODIR}/${PKG_ABI}/${PKG_OUTPUT_DIR}
 .if defined(PKG_VERSION_FROM_DIR) && ${PKG_VERSION} != ${PKG_VERSION_FROM}
 	@echo "==> Checking for new packages (comparing ${PKG_VERSION} to ${PKG_VERSION_FROM})"
-	@for pkg in ${PKG_VERSION_FROM_DIR}/${PKG_NAME_PREFIX}-*; do \
+	@for pkg in ${REPODIR}/${PKG_ABI}/${PKG_OUTPUT_TMPDIR}/${PKG_NAME_PREFIX}-*; do \
 	  pkgname=$$(${PKG_CMD} query -F $${pkg} '%n' | sed 's/${PKG_NAME_PREFIX}-\(.*\)/\1/') ; \
 	  newpkgname=${PKG_NAME_PREFIX}-$${pkgname}-${PKG_VERSION}.${PKG_EXT} ; \
-	  oldsum=$$(${PKG_CMD} query -F $${pkg} '%X') ; \
-	  if [ ! -f ${REPODIR}/${PKG_ABI}/${PKG_VERSION}/$${newpkgname} ]; then \
-	    continue; \
-	  fi ; \
-	  newsum=$$(${PKG_CMD} query -F ${REPODIR}/${PKG_ABI}/${PKG_VERSION}/$${newpkgname} '%X') ; \
+	  oldpkgname=${PKG_NAME_PREFIX}-$${pkgname}-${PKG_VERSION_FROM}.${PKG_EXT} ; \
+	  newsum=$$(${PKG_CMD} query -F ${REPODIR}/${PKG_ABI}/${PKG_OUTPUT_TMPDIR}/$${newpkgname} '%X') ; \
+	  oldpkg=${PKG_VERSION_FROM_DIR}/$${oldpkgname} ; \
+	  oldsum=$$(${PKG_CMD} query -F $${oldpkg} '%X' || :) ; \
 	  if [ "${BRANCH_EXT_FROM}" = "${BRANCH_EXT}" -a "$${oldsum}" = "$${newsum}" ]; then \
-	   echo "==> Keeping old ${PKG_NAME_PREFIX}-$${pkgname}-${PKG_VERSION_FROM}.${PKG_EXT}" ; \
-	   rm ${REPODIR}/${PKG_ABI}/${PKG_VERSION}/$${newpkgname} ; \
-	   cp $${pkg} ${REPODIR}/${PKG_ABI}/${PKG_VERSION} ; \
+	    echo "==> Keeping old ${PKG_NAME_PREFIX}-$${pkgname}-${PKG_VERSION_FROM}.${PKG_EXT}" ; \
+	    rm $${pkg} ; \
+	    cp $${oldpkg} ${REPODIR}/${PKG_ABI}/${PKG_OUTPUT_DIR}/$${newpkgname} ; \
 	  else \
 	    echo "==> New package $${newpkgname}" ; \
+	    mv $${pkg} ${REPODIR}/${PKG_ABI}/${PKG_OUTPUT_DIR} ; \
 	  fi ; \
 	done
 .elif defined(PKG_VERSION_FROM_DIR)
-	@echo "==> Package version ${PKG_VERSION} unchanged, keeping old package set"
+	@echo "==> Checking for changed packages"
+	@for pkg in ${REPODIR}/${PKG_ABI}/${PKG_OUTPUT_TMPDIR}/${PKG_NAME_PREFIX}-*; do \
+	  pkgname=$$(${PKG_CMD} query -F $${pkg} '%n' | sed 's/${PKG_NAME_PREFIX}-\(.*\)/\1/') ; \
+	  newpkgname=${PKG_NAME_PREFIX}-$${pkgname}-${PKG_VERSION}.${PKG_EXT} ; \
+	  oldpkgname=${PKG_NAME_PREFIX}-$${pkgname}-${PKG_VERSION_FROM}.${PKG_EXT} ; \
+	  newsum=$$(${PKG_CMD} query -F ${REPODIR}/${PKG_ABI}/${PKG_OUTPUT_TMPDIR}/$${newpkgname} '%X') ; \
+	  oldpkg=${REPODIR}/${PKG_ABI}/${PKG_OUTPUT_DIR}/$${oldpkgname} ; \
+	  oldsum=$$(${PKG_CMD} query -F $${oldpkg} '%X' || : ) ; \
+	  if [ "$${oldsum}" = "$${newsum}" ]; then \
+	    echo "==> Keeping old ${PKG_NAME_PREFIX}-$${pkgname}-${PKG_VERSION_FROM}.${PKG_EXT}" ; \
+	    rm $${pkg} ; \
+	  else \
+	    echo "==> New package $${newpkgname}" ; \
+	    mv $${pkg} ${REPODIR}/${PKG_ABI}/${PKG_OUTPUT_DIR} ; \
+	  fi ; \
+	done
 .else
-	@echo "==> Bootstrapping repository, not checking for new packages"
+	echo "==> Bootstrapping repository, not checking for new packages"
+	@for pkg in ${REPODIR}/${PKG_ABI}/${PKG_OUTPUT_TMPDIR}/${PKG_NAME_PREFIX}-*; do \
+	  mv $${pkg} ${REPODIR}/${PKG_ABI}/${PKG_OUTPUT_DIR} ; \
+	done
 .endif
+	rmdir ${REPODIR}/${PKG_ABI}/${PKG_OUTPUT_TMPDIR}
 	${_+_}${MAKE} -C ${.CURDIR} -f Makefile.inc1 PKG_VERSION=${PKG_VERSION} sign-packages
 
 stage-packages-world: .PHONY
@@ -2233,7 +2256,7 @@ create-source-src-package: _pkgbootstrap .PHONY
 		-M ${SSTAGEDIR}/src.ucl \
 		-p ${SSTAGEDIR}/src.plist \
 		-r ${SRCDIR} \
-		-o ${REPODIR}/${PKG_ABI}/${PKG_OUTPUT_DIR}
+		-o ${REPODIR}/${PKG_ABI}/${PKG_OUTPUT_TMPDIR}
 .endif
 
 create-source-src-sys-package: _pkgbootstrap .PHONY
@@ -2259,7 +2282,7 @@ create-source-src-sys-package: _pkgbootstrap .PHONY
 		-M ${SSTAGEDIR}/src-sys.ucl \
 		-p ${SSTAGEDIR}/src-sys.plist \
 		-r ${SRCDIR} \
-		-o ${REPODIR}/${PKG_ABI}/${PKG_OUTPUT_DIR}
+		-o ${REPODIR}/${PKG_ABI}/${PKG_OUTPUT_TMPDIR}
 .endif
 
 create-source-packages: .PHONY _pkgbootstrap create-source-src-package create-source-src-sys-package
@@ -2283,7 +2306,7 @@ create-sets-packages-jobs: .PHONY create-sets-packages
 create-sets-packages: .PHONY
 	@echo "==> Creating set metapackages."
 	sh "${SRCDIR}/release/packages/create-sets.sh" "${SRCDIR}" \
-		"${WSTAGEDIR}" "${REPODIR}/${PKG_ABI}/${PKG_OUTPUT_DIR}" \
+		"${WSTAGEDIR}" "${REPODIR}/${PKG_ABI}/${PKG_OUTPUT_TMPDIR}" \
 		VERSION "${PKG_VERSION}" \
 		PKG_NAME_PREFIX "${PKG_NAME_PREFIX}" \
 		PKG_MAINTAINER "${PKG_MAINTAINER}" \
@@ -2293,7 +2316,7 @@ create-sets-packages: .PHONY
 		${PKG_CMD} -o ABI=${PKG_ABI} -o OSVERSION="${SRCRELDATE}" \
 			create -f ${PKG_FORMAT} ${PKG_CLEVEL} -T${PKG_CTHREADS} \
 			-M $$manifest \
-			-o "${REPODIR}/${PKG_ABI}/${PKG_OUTPUT_DIR}" \
+			-o "${REPODIR}/${PKG_ABI}/${PKG_OUTPUT_TMPDIR}" \
 			|| exit 1; \
 	done
 
@@ -2325,7 +2348,7 @@ create-dtb-package:	.PHONY
 		-M ${KSTAGEDIR}/${DISTDIR}/dtb.ucl \
 		-p ${KSTAGEDIR}/${DISTDIR}/dtb.plist \
 		-r ${KSTAGEDIR}/${DISTDIR} \
-		-o ${REPODIR}/${PKG_ABI}/${PKG_OUTPUT_DIR} ; \
+		-o ${REPODIR}/${PKG_ABI}/${PKG_OUTPUT_TMPDIR} ; \
 	fi
 
 create-kernel-packages:	.PHONY create-kernel-flavored-packages create-dtb-package
@@ -2362,7 +2385,7 @@ create-kernel-packages-flavor${flavor:C,^""$,${_default_flavor},}: _pkgbootstrap
 		-M ${KSTAGEDIR}/${DISTDIR}/kernel.${INSTALLKERNEL}${flavor}.ucl \
 		-p ${KSTAGEDIR}/${DISTDIR}/kernel.${INSTALLKERNEL}${flavor}.plist \
 		-r ${KSTAGEDIR}/${DISTDIR} \
-		-o ${REPODIR}/${PKG_ABI}/${PKG_OUTPUT_DIR}
+		-o ${REPODIR}/${PKG_ABI}/${PKG_OUTPUT_TMPDIR}
 . endfor
 .else
 create-kernel-packages: .PHONY
@@ -2405,11 +2428,18 @@ create-kernel-packages-extra-flavor${flavor:C,^""$,${_default_flavor},}-${_kerne
 		-M ${KSTAGEDIR}/kernel.${_kernel}/kernel.${_kernel}${flavor}.ucl \
 		-p ${KSTAGEDIR}/kernel.${_kernel}/kernel.${_kernel}${flavor}.plist \
 		-r ${KSTAGEDIR}/kernel.${_kernel} \
-		-o ${REPODIR}/${PKG_ABI}/${PKG_OUTPUT_DIR}
+		-o ${REPODIR}/${PKG_ABI}/${PKG_OUTPUT_TMPDIR}
 .   endfor
 .  endif
 . endfor
 .endif
+
+# Move packages from the tmpdir to the real output dir, but only if
+# real-update-packages didn't already do it.
+move-packages:	.PHONY
+	@mkdir -p ${REPODIR}/${PKG_ABI}/${PKG_OUTPUT_DIR}
+	@mv ${REPODIR}/${PKG_ABI}/${PKG_OUTPUT_TMPDIR}/* ${REPODIR}/${PKG_ABI}/${PKG_OUTPUT_DIR}
+	@rmdir ${REPODIR}/${PKG_ABI}/${PKG_OUTPUT_TMPDIR}
 
 sign-packages:	.PHONY
 	${_+_}@cd ${.CURDIR}; \
